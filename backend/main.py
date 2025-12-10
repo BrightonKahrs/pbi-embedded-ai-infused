@@ -6,11 +6,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import os
+import logging
 from dotenv import load_dotenv
 from agent_service import agent_service
+from generate_pbi_token import PowerBITokenGenerator
 
 # Load environment variables
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Power BI Embedded AI Backend",
@@ -47,6 +53,57 @@ class PowerBIConfig(BaseModel):
 
 # In-memory conversation history (in production, use a database)
 conversation_history = []
+
+# Global Power BI token info
+powerbi_token_info = {
+    "embedUrl": "",
+    "accessToken": "",
+    "reportId": "",
+    "workspaceId": "",
+    "tokenExpiry": "",
+    "reportName": ""
+}
+
+async def generate_powerbi_token():
+    """Generate Power BI embed token at startup"""
+    global powerbi_token_info
+    
+    # Get configuration from environment variables
+    report_id = os.getenv("POWERBI_REPORT_ID")
+    workspace_id = os.getenv("POWERBI_WORKSPACE_ID")  # Optional
+    
+    if not report_id:
+        logger.warning("POWERBI_REPORT_ID not set. Power BI functionality will be limited.")
+        logger.info("To enable automatic token generation, set POWERBI_REPORT_ID in your .env file")
+        return
+    
+    try:
+        logger.info("Generating Power BI embed token using Azure CLI authentication...")
+        logger.info(f"Report ID: {report_id}")
+        if workspace_id:
+            logger.info(f"Workspace ID: {workspace_id}")
+        else:
+            logger.info("Using 'My Workspace' (no workspace ID specified)")
+            
+        generator = PowerBITokenGenerator()
+        token_info = generator.generate_embed_token(report_id, workspace_id)
+        
+        if token_info and token_info.get("embedToken"):
+            powerbi_token_info.update(token_info)
+            logger.info(f"✅ Successfully generated Power BI token for report: {token_info.get('reportName', 'Unknown')}")
+            logger.info(f"Token expires at: {token_info.get('tokenExpiry', 'Unknown')}")
+        else:
+            logger.error("❌ Failed to generate Power BI embed token - no token returned")
+    except Exception as e:
+        logger.error(f"❌ Error generating Power BI token: {e}")
+        logger.warning("Power BI functionality will use environment variables if available")
+        logger.info("Make sure you're logged in with 'az login' and have access to the Power BI report")
+
+# FastAPI startup event to generate Power BI token
+@app.on_event("startup")
+async def startup_event():
+    """Generate Power BI token when the app starts"""
+    await generate_powerbi_token()
 
 @app.get("/")
 async def root():
@@ -109,23 +166,131 @@ async def clear_chat_history():
 async def get_powerbi_config():
     """
     Get Power BI configuration
-    In production, this would authenticate and get embed tokens from Power BI API
+    Uses dynamically generated embed token from Azure CLI authentication
     """
-    # These should come from environment variables in production
+    global powerbi_token_info
+    
+    # Check if we have generated token info
+    if powerbi_token_info.get("embedUrl") and powerbi_token_info.get("embedToken"):
+        logger.info("Using dynamically generated Power BI token")
+        return PowerBIConfig(
+            embedUrl=powerbi_token_info["embedUrl"],
+            accessToken=powerbi_token_info["embedToken"],
+            embedType="report"
+        )
+    
+    # Fallback to environment variables
     embed_url = os.getenv("POWERBI_EMBED_URL", "")
     access_token = os.getenv("POWERBI_ACCESS_TOKEN", "")
     
-    if not embed_url or not access_token:
-        raise HTTPException(
-            status_code=500, 
-            detail="Power BI configuration not set. Please configure POWERBI_EMBED_URL and POWERBI_ACCESS_TOKEN environment variables."
+    if embed_url and access_token:
+        logger.info("Using Power BI token from environment variables")
+        return PowerBIConfig(
+            embedUrl=embed_url,
+            accessToken=access_token,
+            embedType="report"
         )
     
-    return PowerBIConfig(
-        embedUrl=embed_url,
-        accessToken=access_token,
-        embedType="report"
+    # No configuration available
+    raise HTTPException(
+        status_code=500, 
+        detail="Power BI configuration not available. Set POWERBI_REPORT_ID (and optionally POWERBI_WORKSPACE_ID) in .env, or set POWERBI_EMBED_URL and POWERBI_ACCESS_TOKEN manually. Make sure you're logged in with 'az login'."
     )
+
+@app.get("/api/powerbi/refresh-token")
+async def refresh_powerbi_token():
+    """
+    Refresh the Power BI embed token
+    """
+    try:
+        await generate_powerbi_token()
+        if powerbi_token_info.get("embedToken"):
+            return {
+                "success": True,
+                "message": "Power BI token refreshed successfully",
+                "tokenExpiry": powerbi_token_info.get("tokenExpiry", "Unknown"),
+                "reportName": powerbi_token_info.get("reportName", "Unknown")
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Failed to refresh Power BI token"
+            }
+    except Exception as e:
+        logger.error(f"Error refreshing Power BI token: {e}")
+        raise HTTPException(status_code=500, detail=f"Error refreshing token: {str(e)}")
+
+@app.get("/api/powerbi/status")
+async def get_powerbi_status():
+    """
+    Get Power BI token status and information
+    """
+    global powerbi_token_info
+    
+    return {
+        "tokenGenerated": bool(powerbi_token_info.get("embedToken")),
+        "reportName": powerbi_token_info.get("reportName", "Unknown"),
+        "reportId": powerbi_token_info.get("reportId", "Not set"),
+        "workspaceId": powerbi_token_info.get("workspaceId", "My Workspace"),
+        "tokenExpiry": powerbi_token_info.get("tokenExpiry", "Unknown"),
+        "hasEmbedUrl": bool(powerbi_token_info.get("embedUrl")),
+        "configuredFromEnv": {
+            "POWERBI_REPORT_ID": bool(os.getenv("POWERBI_REPORT_ID")),
+            "POWERBI_WORKSPACE_ID": bool(os.getenv("POWERBI_WORKSPACE_ID")),
+            "POWERBI_EMBED_URL": bool(os.getenv("POWERBI_EMBED_URL")),
+            "POWERBI_ACCESS_TOKEN": bool(os.getenv("POWERBI_ACCESS_TOKEN"))
+        }
+    }
+
+@app.get("/api/azure/auth-test")
+async def test_azure_authentication():
+    """
+    Test Azure CLI authentication
+    """
+    try:
+        from azure.identity import AzureCliCredential, DefaultAzureCredential
+        
+        # Test Azure CLI credential
+        try:
+            credential = AzureCliCredential()
+            # Test getting a token for Power BI
+            token = credential.get_token("https://analysis.windows.net/powerbi/api/.default")
+            
+            return {
+                "success": True,
+                "method": "Azure CLI",
+                "message": "Successfully authenticated with Azure CLI",
+                "tokenObtained": bool(token and token.token),
+                "tokenPrefix": token.token[:20] + "..." if token and token.token else "None"
+            }
+        except Exception as cli_error:
+            # Try default credential
+            try:
+                credential = DefaultAzureCredential()
+                token = credential.get_token("https://analysis.windows.net/powerbi/api/.default")
+                
+                return {
+                    "success": True,
+                    "method": "Default Azure Credential",
+                    "message": "Successfully authenticated with Default Azure Credential",
+                    "tokenObtained": bool(token and token.token),
+                    "tokenPrefix": token.token[:20] + "..." if token and token.token else "None",
+                    "cliError": str(cli_error)
+                }
+            except Exception as default_error:
+                return {
+                    "success": False,
+                    "method": "None",
+                    "message": "Failed to authenticate with Azure",
+                    "cliError": str(cli_error),
+                    "defaultError": str(default_error),
+                    "suggestion": "Run 'az login' to authenticate with Azure CLI"
+                }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error testing authentication: {str(e)}"
+        }
 
 if __name__ == "__main__":
     import uvicorn

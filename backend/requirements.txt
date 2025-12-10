@@ -3,5 +3,9 @@ uvicorn[standard]==0.32.1
 python-dotenv==1.0.1
 pydantic==2.10.3
 pydantic-settings==2.6.1
+agent-framework>=1.0.0a1
+agent-framework-azure-ai>=1.0.0a1
+azure-identity>=1.19.0
 azure-ai-inference==1.0.0b6
 openai==1.57.2
+requests>=2.31.0
