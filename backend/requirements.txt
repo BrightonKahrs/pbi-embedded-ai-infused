@@ -8,3 +8,4 @@ agent-framework-azure-ai>=1.0.0a1
 azure-identity>=1.19.0
 azure-ai-inference==1.0.0b6
 openai==1.57.2
+requests>=2.31.0
