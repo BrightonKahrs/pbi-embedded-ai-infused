@@ -6,40 +6,68 @@ import './PowerBIReport.css';
 
 interface PowerBIReportProps {
   reportId?: string;
+  visualId?: string;
+  pageName?: string;
+  embedType?: 'report' | 'visual';
 }
 
-const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId }) => {
-  const [embedConfig, setEmbedConfig] = useState<models.IReportEmbedConfiguration | null>(null);
+const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageName, embedType = 'report' }) => {
+  const [embedConfig, setEmbedConfig] = useState<models.IReportEmbedConfiguration | models.IVisualEmbedConfiguration | null>(null);
   const [error, setError] = useState<string>('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     loadPowerBIConfig();
-  }, [reportId]);
+  }, [reportId, visualId, embedType]);
 
   const loadPowerBIConfig = async () => {
     try {
       setLoading(true);
       setError('');
-      const config = await apiService.getPowerBIConfig();
       
-      const embedConfiguration: models.IReportEmbedConfiguration = {
-        type: 'report',
-        embedUrl: config.embedUrl,
-        accessToken: config.accessToken,
-        tokenType: models.TokenType.Embed,
-        settings: {
-          panes: {
-            filters: {
-              expanded: false,
-              visible: true
-            }
-          },
-          background: models.BackgroundType.Transparent,
+      // Get config with optional visual ID
+      const config = await apiService.getPowerBIConfig(visualId);
+      
+      if (embedType === 'visual' && visualId) {
+        // Visual embedding configuration - requires both visualName and pageName
+        if (!pageName) {
+          throw new Error('Page name is required for visual embedding. Please specify the page name.');
         }
-      };
+        
+        const visualEmbedConfiguration: models.IVisualEmbedConfiguration = {
+          type: 'visual',
+          embedUrl: config.embedUrl,
+          accessToken: config.accessToken,
+          tokenType: models.TokenType.Embed,
+          visualName: visualId,
+          pageName: pageName, // Required for visual embedding
+          settings: {
+            background: models.BackgroundType.Transparent,
+          }
+        };
+        
+        setEmbedConfig(visualEmbedConfiguration);
+      } else {
+        // Report embedding configuration
+        const reportEmbedConfiguration: models.IReportEmbedConfiguration = {
+          type: 'report',
+          embedUrl: config.embedUrl,
+          accessToken: config.accessToken,
+          tokenType: models.TokenType.Embed,
+          settings: {
+            panes: {
+              filters: {
+                expanded: false,
+                visible: true
+              }
+            },
+            background: models.BackgroundType.Transparent,
+          }
+        };
+        
+        setEmbedConfig(reportEmbedConfiguration);
+      }
       
-      setEmbedConfig(embedConfiguration);
       setLoading(false);
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to load Power BI configuration. Please ensure the backend is running and configured.');
@@ -53,7 +81,7 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId }) => {
       <div className="powerbi-container">
         <div className="loading-state">
           <div className="spinner"></div>
-          <p>Loading Power BI Report...</p>
+          <p>Loading Power BI {embedType === 'visual' ? 'Visual' : 'Report'}...</p>
         </div>
       </div>
     );
@@ -88,6 +116,14 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId }) => {
 
   return (
     <div className="powerbi-container">
+      <div className="powerbi-header">
+        <h3>
+          {embedType === 'visual' ? '🎨 Visual' : '📊 Report'} Embedding
+          {embedType === 'visual' && visualId && (
+            <span className="visual-id-display"> - {visualId}</span>
+          )}
+        </h3>
+      </div>
       <PowerBIEmbed
         embedConfig={embedConfig}
         cssClassName="powerbi-report-frame"
