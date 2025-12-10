@@ -87,8 +87,23 @@ Be helpful, concise, and professional in your responses."""
             
             # Call the AI service
             if self.endpoint:
-                # Azure OpenAI
-                response = self.client.complete(messages=full_messages)
+                # Azure AI Inference
+                from azure.ai.inference.models import UserMessage, SystemMessage, AssistantMessage
+                
+                # Convert messages to Azure AI format
+                azure_messages = []
+                for msg in full_messages:
+                    if msg["role"] == "system":
+                        azure_messages.append(SystemMessage(content=msg["content"]))
+                    elif msg["role"] == "user":
+                        azure_messages.append(UserMessage(content=msg["content"]))
+                    elif msg["role"] == "assistant":
+                        azure_messages.append(AssistantMessage(content=msg["content"]))
+                
+                response = self.client.complete(
+                    messages=azure_messages,
+                    model=self.model
+                )
                 return response.choices[0].message.content
             else:
                 # OpenAI
