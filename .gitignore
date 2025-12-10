@@ -33,6 +33,12 @@ yarn-error.log*
 .pnp
 .pnp.js
 
+# Package lock files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+frontend/package-lock.json
+
 # React build
 frontend/build/
 frontend/dist/
