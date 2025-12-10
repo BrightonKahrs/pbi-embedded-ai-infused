@@ -1,19 +1,24 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import { PowerBIEmbed } from 'powerbi-client-react';
+import { models } from 'powerbi-client';
 import { apiService, PowerBIVisualsResponse, PowerBIVisual } from '../services/api';
 import './VisualSelector.css';
 
 interface VisualSelectorProps {
   onVisualSelect: (visualId: string) => void;
   onPageSelect?: (pageName: string) => void;
-  selectedVisualId?: string;
+  selectedVisualIds?: string[];
   selectedPageName?: string;
 }
 
-const VisualSelector: React.FC<VisualSelectorProps> = ({ onVisualSelect, onPageSelect, selectedVisualId, selectedPageName }) => {
+const VisualSelector: React.FC<VisualSelectorProps> = ({ onVisualSelect, onPageSelect, selectedVisualIds = [], selectedPageName }) => {
   const [visuals, setVisuals] = useState<PowerBIVisualsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>('');
   const [expandedPages, setExpandedPages] = useState<Set<string>>(new Set());
+  const [discoveredVisuals, setDiscoveredVisuals] = useState<{[pageName: string]: PowerBIVisual[]}>({});
+  const [reportEmbedConfig, setReportEmbedConfig] = useState<models.IReportEmbedConfiguration | null>(null);
+  const hiddenReportRef = useRef<any>(null);
 
   useEffect(() => {
     loadVisuals();
@@ -26,11 +31,9 @@ const VisualSelector: React.FC<VisualSelectorProps> = ({ onVisualSelect, onPageS
       const visualsData = await apiService.getPowerBIVisuals();
       setVisuals(visualsData);
       
-      // Auto-expand the first page if there are any visuals
-      if (visualsData.pages && Object.keys(visualsData.pages).length > 0) {
-        const firstPageName = Object.keys(visualsData.pages)[0];
-        setExpandedPages(new Set([firstPageName]));
-      }
+      // Setup hidden report for visual discovery
+      await setupHiddenReport();
+      
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to load visuals');
       console.error('Error loading visuals:', err);
@@ -51,6 +54,91 @@ const VisualSelector: React.FC<VisualSelectorProps> = ({ onVisualSelect, onPageS
 
   const handleVisualSelect = (visualId: string) => {
     onVisualSelect(visualId);
+  };
+
+  const discoverVisualsOnPage = async (pageName: string) => {
+    if (!hiddenReportRef.current || discoveredVisuals[pageName]) {
+      return; // Already discovered or no report
+    }
+
+    try {
+      setLoading(true);
+      
+      // Get all pages from the hidden report
+      const pages = await hiddenReportRef.current.getPages();
+      const targetPage = pages.find((p: any) => p.name === pageName);
+      
+      if (targetPage) {
+        // Get visuals from the specific page
+        const pageVisuals = await targetPage.getVisuals();
+        
+        const visualList: PowerBIVisual[] = pageVisuals.map((visual: any) => ({
+          visualId: visual.name,
+          title: visual.title || `${visual.type} (${visual.name})`,
+          type: visual.type
+        }));
+        
+        setDiscoveredVisuals(prev => ({
+          ...prev,
+          [pageName]: visualList
+        }));
+        
+        // Auto-expand this page
+        setExpandedPages(prev => new Set(prev).add(pageName));
+      }
+    } catch (err) {
+      console.error('Error discovering visuals:', err);
+      setError(`Failed to discover visuals on page: ${pageName}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePageClick = async (pageName: string, pageDisplayName: string) => {
+    if (onPageSelect) {
+      onPageSelect(pageName);
+    }
+    
+    // Discover visuals on this page
+    await discoverVisualsOnPage(pageName);
+  };
+
+  const setupHiddenReport = async () => {
+    try {
+      // Get Power BI config for the hidden report
+      const config = await apiService.getPowerBIConfig();
+      
+      const hiddenConfig: models.IReportEmbedConfiguration = {
+        type: 'report',
+        embedUrl: config.embedUrl,
+        accessToken: config.accessToken,
+        tokenType: models.TokenType.Embed,
+        settings: {
+          panes: {
+            filters: { visible: false },
+            pageNavigation: { visible: false }
+          },
+          background: models.BackgroundType.Transparent,
+        }
+      };
+      
+      setReportEmbedConfig(hiddenConfig);
+    } catch (err) {
+      console.error('Error setting up hidden report:', err);
+      setError('Failed to setup visual discovery');
+    }
+  };
+
+  const renderLoadingIndicator = () => {
+    if (loading) {
+      return (
+        <div className="loading-indicator">
+          <div className="mini-spinner"></div>
+          <span>Loading...</span>
+        </div>
+      );
+    }
+    return null;
   };
 
   if (loading) {
@@ -86,7 +174,10 @@ const VisualSelector: React.FC<VisualSelectorProps> = ({ onVisualSelect, onPageS
   return (
     <div className="visual-selector">
       <div className="visual-selector-header">
-        <h3>Report Pages ({visuals.totalPages} available)</h3>
+        <div className="header-left">
+          <h3>Report Pages ({visuals?.totalPages || 0} available)</h3>
+          {renderLoadingIndicator()}
+        </div>
         <button onClick={loadVisuals} className="refresh-button">
           🔄 Refresh
         </button>
@@ -103,20 +194,45 @@ const VisualSelector: React.FC<VisualSelectorProps> = ({ onVisualSelect, onPageS
       <div className="pages-container">
         <h4>Available Pages:</h4>
         {visuals.pagesInfo?.map((page: any) => (
-          <div 
-            key={page.name} 
-            className={`page-info ${selectedPageName === page.name ? 'selected' : ''}`}
-            onClick={() => onPageSelect && onPageSelect(page.name)}
-            style={{ cursor: onPageSelect ? 'pointer' : 'default' }}
-          >
-            <div className="page-name">{page.displayName}</div>
-            <div className="page-details">
-              <span className="page-id">ID: {page.name}</span>
-              <span className="page-order">Order: {page.order}</span>
-            </div>
-            {onPageSelect && (
+          <div key={page.name}>
+            <div 
+              className={`page-info ${selectedPageName === page.name ? 'selected' : ''}`}
+              onClick={() => handlePageClick(page.name, page.displayName)}
+              style={{ cursor: 'pointer' }}
+            >
+              <div className="page-name">{page.displayName}</div>
+              <div className="page-details">
+                <span className="page-id">ID: {page.name}</span>
+                <span className="page-order">Order: {page.order}</span>
+              </div>
               <div className="select-indicator">
-                {selectedPageName === page.name ? '✓ Selected' : 'Click to select'}
+                {selectedPageName === page.name ? '✓ Selected' : 'Click to discover visuals'}
+              </div>
+            </div>
+            
+            {/* Show discovered visuals for this page */}
+            {discoveredVisuals[page.name] && (
+              <div className="visuals-list" style={{ marginLeft: '16px', marginTop: '8px' }}>
+                <h5>Visuals on {page.displayName}:</h5>
+                {discoveredVisuals[page.name].map((visual) => {
+                  const isSelected = selectedVisualIds.includes(visual.visualId);
+                  return (
+                    <div
+                      key={visual.visualId}
+                      className={`visual-item ${isSelected ? 'selected' : ''}`}
+                      onClick={() => handleVisualSelect(visual.visualId)}
+                    >
+                      <div className="visual-header">
+                        <div className="visual-title">{visual.title}</div>
+                        <div className="selection-indicator">
+                          {isSelected ? '✓ Selected' : '+ Select'}
+                        </div>
+                      </div>
+                      <div className="visual-type">{visual.type}</div>
+                      <div className="visual-id">{visual.visualId}</div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -133,6 +249,20 @@ const VisualSelector: React.FC<VisualSelectorProps> = ({ onVisualSelect, onPageS
           />
         </div>
       </div>
+      
+      {/* Hidden report for visual discovery */}
+      {reportEmbedConfig && (
+        <div style={{ display: 'none' }}>
+          <PowerBIEmbed
+            embedConfig={reportEmbedConfig as models.IReportEmbedConfiguration}
+            cssClassName="hidden-report"
+            getEmbeddedComponent={(embeddedReport) => {
+              hiddenReportRef.current = embeddedReport;
+              console.log('Hidden report loaded for visual discovery');
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 };

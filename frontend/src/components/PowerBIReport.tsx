@@ -9,9 +9,11 @@ interface PowerBIReportProps {
   visualId?: string;
   pageName?: string;
   embedType?: 'report' | 'visual';
+  onDataSelected?: (visualId: string, event: any) => void;
+  onVisualRef?: (visualId: string, visualRef: any) => void;
 }
 
-const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageName, embedType = 'report' }) => {
+const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageName, embedType = 'report', onDataSelected, onVisualRef }) => {
   const [embedConfig, setEmbedConfig] = useState<models.IReportEmbedConfiguration | models.IVisualEmbedConfiguration | null>(null);
   const [error, setError] = useState<string>('');
   const [loading, setLoading] = useState(true);
@@ -127,8 +129,48 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageN
       <PowerBIEmbed
         embedConfig={embedConfig}
         cssClassName="powerbi-report-frame"
-        getEmbeddedComponent={(embeddedReport) => {
-          console.log('Power BI Report Embedded:', embeddedReport);
+        getEmbeddedComponent={(embeddedComponent) => {
+          console.log('Power BI Component Embedded:', embeddedComponent);
+          
+          // Register the visual reference for cross-filtering (only for visuals)
+          if (embedType === 'visual' && visualId && onVisualRef) {
+            onVisualRef(visualId, embeddedComponent);
+          }
+          
+          // Set up cross-filtering event listeners for visuals
+          if (embedType === 'visual' && visualId && onDataSelected && embeddedComponent) {
+            // Listen for data selection events
+            embeddedComponent.on('dataSelected', (event: any) => {
+              console.log('Data selected in visual:', visualId, event);
+              onDataSelected(visualId, event);
+            });
+            
+            // Listen for selection changed events (alternative event)
+            embeddedComponent.on('selectionChanged', (event: any) => {
+              console.log('Selection changed in visual:', visualId, event);
+              onDataSelected(visualId, event);
+            });
+            
+            // Listen for visual clicked events (for additional interaction)
+            embeddedComponent.on('visualClicked', (event: any) => {
+              console.log('Visual clicked:', visualId, event);
+              onDataSelected(visualId, event);
+            });
+            
+            // Clean up event listeners when component unmounts
+            return () => {
+              try {
+                embeddedComponent.off('dataSelected');
+                embeddedComponent.off('selectionChanged');
+                embeddedComponent.off('visualClicked');
+                if (onVisualRef) {
+                  onVisualRef(visualId, null); // Unregister the reference
+                }
+              } catch (error) {
+                console.warn('Error cleaning up event listeners:', error);
+              }
+            };
+          }
         }}
       />
     </div>
