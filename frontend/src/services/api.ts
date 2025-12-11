@@ -35,6 +35,7 @@ export interface PowerBIVisualsResponse {
   totalPages: number;
   pages: { [pageName: string]: PowerBIVisual[] };
   pagesInfo: any[];
+  visualsInfo?: any[]; // Array of all visuals with their page info
   note: string;
   instructions: string;
 }

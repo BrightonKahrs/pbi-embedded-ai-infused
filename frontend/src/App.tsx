@@ -4,6 +4,7 @@ import './App.css';
 import PowerBIReport from './components/PowerBIReport';
 import VisualSelector from './components/VisualSelector';
 import AIChat from './components/AIChat';
+import VisualCreatorModal from './components/VisualCreatorModal';
 import { apiService } from './services/api';
 
 /**
@@ -25,18 +26,24 @@ function App() {
   const [visualIds, setVisualIds] = useState<string[]>([]);
   const [pageName, setPageName] = useState<string>('');  
   const [discoveredPages, setDiscoveredPages] = useState<any[]>([]);
+  const [availableVisuals, setAvailableVisuals] = useState<any[]>([]);
   const [theme, setTheme] = useState<'light' | 'dark' | 'highContrast'>('light');
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   
   // Store references to embedded visuals for cross-filtering
   const visualRefsMap = useRef<Map<string, any>>(new Map());
   const [crossFilterEnabled, setCrossFilterEnabled] = useState<boolean>(true);
 
-  // Load available pages on component mount
+  // Load available pages and visuals on component mount
   useEffect(() => {
     const loadPages = async () => {
       try {
         const visualsData = await apiService.getPowerBIVisuals();
         setDiscoveredPages(visualsData.pagesInfo || []);
+        // availableVisuals will be the full visualsInfo array from the API
+        if (visualsData.visualsInfo) {
+          setAvailableVisuals(visualsData.visualsInfo);
+        }
       } catch (error) {
         console.error('Failed to load pages:', error);
       }
@@ -147,6 +154,18 @@ function App() {
     }
   };
 
+  // Handle visual creation from modal
+  const handleCreateVisual = (visualId: string, newPageName: string) => {
+    setPageName(newPageName);
+    setVisualIds(prev => [...prev, visualId]);
+    setEmbedType('visual');
+  };
+
+  // Open modal
+  const handleOpenModal = () => {
+    setIsModalOpen(true);
+  };
+
   return (
     <div className="App">
       <header className="App-header">
@@ -193,7 +212,7 @@ function App() {
         </div>
 
         {/* Visual selection controls - shown when Power BI Widgets tab is active */}
-        {embedType === 'visual' && (
+        {embedType === 'visual' && visualIds.length > 1 && (
           <div className="visual-controls" style={{ 
             marginTop: '15px', 
             display: 'flex', 
@@ -201,49 +220,6 @@ function App() {
             alignItems: 'center',
             flexWrap: 'wrap'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <label style={{ fontSize: '14px', color: 'white', fontWeight: '500' }}>Page:</label>
-              <select 
-                value={pageName}
-                onChange={(e) => setPageName(e.target.value)}
-                style={{ 
-                  padding: '6px 10px', 
-                  borderRadius: '4px', 
-                  border: 'none', 
-                  fontSize: '14px',
-                  width: '160px',
-                  backgroundColor: 'white'
-                }}
-              >
-                <option value="">Select a page...</option>
-                {discoveredPages.map((page) => (
-                  <option key={page.name} value={page.name}>
-                    {page.displayName || page.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <label style={{ fontSize: '14px', color: 'white', fontWeight: '500' }}>Visual IDs:</label>
-              <input 
-                type="text" 
-                placeholder="visual1, visual2" 
-                value={visualIds.join(', ')}
-                onChange={(e) => setVisualIds(e.target.value.split(',').map(id => id.trim()).filter(id => id))}
-                style={{ 
-                  padding: '6px 10px', 
-                  borderRadius: '4px', 
-                  border: 'none', 
-                  fontSize: '14px',
-                  width: '200px'
-                }}
-              />
-              {visualIds.length > 0 && (
-                <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.8)' }}>
-                  ({visualIds.length} selected)
-                </span>
-              )}
-            </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <button 
                 onClick={clearAllVisuals} 
@@ -257,18 +233,16 @@ function App() {
                   cursor: 'pointer' 
                 }}
               >
-                Clear
+                Clear All Visuals
               </button>
-              {visualIds.length > 1 && (
-                <label style={{ fontSize: '12px', color: 'white', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <input 
-                    type="checkbox" 
-                    checked={crossFilterEnabled} 
-                    onChange={(e) => setCrossFilterEnabled(e.target.checked)}
-                  />
-                  Cross-filter
-                </label>
-              )}
+              <label style={{ fontSize: '12px', color: 'white', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <input 
+                  type="checkbox" 
+                  checked={crossFilterEnabled} 
+                  onChange={(e) => setCrossFilterEnabled(e.target.checked)}
+                />
+                Cross-filter
+              </label>
             </div>
           </div>
         )}
@@ -280,14 +254,6 @@ function App() {
           {embedType === 'visual' ? (
             /* Render visual grid with placeholder */
             <div className="multi-visual-container">
-              <div className="multi-visual-header">
-                <h3>📊 Visual Canvas ({visualIds.length} visual{visualIds.length !== 1 ? 's' : ''} selected)</h3>
-                {visualIds.length > 1 && crossFilterEnabled && (
-                  <p style={{ margin: '4px 0', fontSize: '12px', color: '#666' }}>
-                    🔗 Cross-filtering enabled - Click on data points to filter other visuals
-                  </p>
-                )}
-              </div>
               <div className="multi-visual-grid">
                 {visualIds.map((visualId, index) => (
                   <div key={visualId} className="visual-container">
@@ -301,13 +267,7 @@ function App() {
                   </div>
                 ))}
                 {/* Placeholder tile for adding new visuals */}
-                <div className="visual-placeholder" onClick={() => {
-                  // Focus on the visual ID input to encourage adding a visual
-                  const visualInput = document.querySelector('.visual-controls input') as HTMLInputElement;
-                  if (visualInput) {
-                    visualInput.focus();
-                  }
-                }}>
+                <div className="visual-placeholder" onClick={handleOpenModal}>
                   <div className="placeholder-content">
                     <div className="plus-icon">+</div>
                     <div className="placeholder-text">Add Visual</div>
@@ -326,6 +286,15 @@ function App() {
           <AIChat />
         </div>
       </div>
+
+      {/* Visual Creator Modal */}
+      <VisualCreatorModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onCreateVisual={handleCreateVisual}
+        discoveredPages={discoveredPages}
+        availableVisuals={availableVisuals}
+      />
     </div>
   );
 }
