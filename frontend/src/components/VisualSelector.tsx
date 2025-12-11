@@ -175,7 +175,7 @@ const VisualSelector: React.FC<VisualSelectorProps> = ({ onVisualSelect, onPageS
     <div className="visual-selector">
       <div className="visual-selector-header">
         <div className="header-left">
-          <h3>Report Pages ({visuals?.totalPages || 0} available)</h3>
+          <h3>Visual Selector</h3>
           {renderLoadingIndicator()}
         </div>
         <button onClick={loadVisuals} className="refresh-button">
@@ -183,71 +183,15 @@ const VisualSelector: React.FC<VisualSelectorProps> = ({ onVisualSelect, onPageS
         </button>
       </div>
       
-      <div className="info-section">
-        <div className="info-box">
-          <strong>Visual Discovery Note:</strong>
-          <p>{visuals.note}</p>
-          <p><em>{visuals.instructions}</em></p>
-        </div>
-      </div>
-      
-      <div className="pages-container">
-        <h4>Available Pages:</h4>
-        {visuals.pagesInfo?.map((page: any) => (
-          <div key={page.name}>
-            <div 
-              className={`page-info ${selectedPageName === page.name ? 'selected' : ''}`}
-              onClick={() => handlePageClick(page.name, page.displayName)}
-              style={{ cursor: 'pointer' }}
-            >
-              <div className="page-name">{page.displayName}</div>
-              <div className="page-details">
-                <span className="page-id">ID: {page.name}</span>
-                <span className="page-order">Order: {page.order}</span>
-              </div>
-              <div className="select-indicator">
-                {selectedPageName === page.name ? '✓ Selected' : 'Click to discover visuals'}
-              </div>
-            </div>
-            
-            {/* Show discovered visuals for this page */}
-            {discoveredVisuals[page.name] && (
-              <div className="visuals-list" style={{ marginLeft: '16px', marginTop: '8px' }}>
-                <h5>Visuals on {page.displayName}:</h5>
-                {discoveredVisuals[page.name].map((visual) => {
-                  const isSelected = selectedVisualIds.includes(visual.visualId);
-                  return (
-                    <div
-                      key={visual.visualId}
-                      className={`visual-item ${isSelected ? 'selected' : ''}`}
-                      onClick={() => handleVisualSelect(visual.visualId)}
-                    >
-                      <div className="visual-header">
-                        <div className="visual-title">{visual.title}</div>
-                        <div className="selection-indicator">
-                          {isSelected ? '✓ Selected' : '+ Select'}
-                        </div>
-                      </div>
-                      <div className="visual-type">{visual.type}</div>
-                      <div className="visual-id">{visual.visualId}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        ))}
-        
-        <div className="manual-input-section">
-          <h4>Manual Visual ID Input:</h4>
-          <p>Enter a visual ID if you know it from the report:</p>
-          <input 
-            type="text" 
-            placeholder="Enter Visual ID (e.g., 'visual1', 'chart_123')" 
-            onChange={(e) => handleVisualSelect(e.target.value)}
-            className="manual-visual-input"
-          />
-        </div>
+      <div className="manual-input-section">
+        <h4>Enter Visual ID:</h4>
+        <p>Enter a visual ID from your Power BI report:</p>
+        <input 
+          type="text" 
+          placeholder="Enter Visual ID (e.g., 'visual1', 'chart_123')" 
+          onChange={(e) => handleVisualSelect(e.target.value)}
+          className="manual-visual-input"
+        />
       </div>
       
       {/* Hidden report for visual discovery */}

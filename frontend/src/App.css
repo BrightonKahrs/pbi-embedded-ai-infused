@@ -42,6 +42,51 @@
   margin: 0 auto;
 }
 
+/* Tab controls styling */
+.tab-controls {
+  display: flex;
+  gap: 2px;
+  margin-top: 20px;
+}
+
+.tab {
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  border-radius: 8px;
+  position: relative;
+}
+
+.tab:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.tab.active {
+  background: white;
+  color: #667eea;
+  font-weight: 600;
+  box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+}
+
+.tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60%;
+  height: 3px;
+  background: #667eea;
+  border-radius: 3px;
+}
+
 .report-section {
   min-height: 0;
   display: flex;
@@ -118,7 +163,11 @@
   border-radius: 8px;
   background: white;
   overflow: hidden;
-  min-height: 400px;
+  min-height: 250px;
+  max-height: 350px;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
 }
 
 .visual-label {
@@ -147,7 +196,8 @@
   }
   
   .visual-container {
-    min-height: 300px;
+    min-height: 200px;
+    max-height: 280px;
   }
 }
 

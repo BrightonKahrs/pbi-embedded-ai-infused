@@ -1,9 +1,10 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { models } from 'powerbi-client';
 import './App.css';
 import PowerBIReport from './components/PowerBIReport';
 import VisualSelector from './components/VisualSelector';
 import AIChat from './components/AIChat';
+import { apiService } from './services/api';
 
 /**
  * Cross-Filtering Feature Implementation:
@@ -23,10 +24,24 @@ function App() {
   const [embedType, setEmbedType] = useState<'report' | 'visual'>('report');
   const [visualIds, setVisualIds] = useState<string[]>([]);
   const [pageName, setPageName] = useState<string>('');  
+  const [discoveredPages, setDiscoveredPages] = useState<any[]>([]);
   
   // Store references to embedded visuals for cross-filtering
   const visualRefsMap = useRef<Map<string, any>>(new Map());
   const [crossFilterEnabled, setCrossFilterEnabled] = useState<boolean>(true);
+
+  // Load available pages on component mount
+  useEffect(() => {
+    const loadPages = async () => {
+      try {
+        const visualsData = await apiService.getPowerBIVisuals();
+        setDiscoveredPages(visualsData.pagesInfo || []);
+      } catch (error) {
+        console.error('Failed to load pages:', error);
+      }
+    };
+    loadPages();
+  }, []);
 
   const handleVisualSelect = (selectedVisualId: string) => {
     setVisualIds(prev => {
@@ -132,94 +147,104 @@ function App() {
         <h1>📊 Power BI Embedded with AI</h1>
         <p>Analyze your data with AI-powered insights</p>
         
-        {/* Embedding controls */}
-        <div className="embed-controls" style={{ marginTop: '20px' }}>
-          <label>
-            <input 
-              type="radio" 
-              value="report" 
-              checked={embedType === 'report'} 
-              onChange={(e) => setEmbedType('report')} 
-            />
-            Full Report
-          </label>
-          <label style={{ marginLeft: '15px' }}>
-            <input 
-              type="radio" 
-              value="visual" 
-              checked={embedType === 'visual'} 
-              onChange={(e) => setEmbedType('visual')} 
-            />
-            Specific Visual
-          </label>
+        {/* Tab controls */}
+        <div className="tab-controls" style={{ marginTop: '20px' }}>
+          <button 
+            className={`tab ${embedType === 'report' ? 'active' : ''}`}
+            onClick={() => setEmbedType('report')}
+          >
+            Full report
+          </button>
+          <button 
+            className={`tab ${embedType === 'visual' ? 'active' : ''}`}
+            onClick={() => setEmbedType('visual')}
+          >
+            Power BI Widgets
+          </button>
         </div>
 
+        {/* Visual selection controls - shown when Power BI Widgets tab is active */}
         {embedType === 'visual' && (
-          <div style={{ marginTop: '15px', height: 'calc(100vh - 280px)', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ marginBottom: '15px', padding: '12px', backgroundColor: '#e8f4f8', borderRadius: '6px', flexShrink: 0 }}>
-              <h4 style={{ margin: '0 0 8px 0', color: '#333' }}>🎯 New: Automatic Visual Discovery!</h4>
-              <ol style={{ margin: '0', paddingLeft: '20px', fontSize: '14px', color: '#666' }}>
-                <li><strong>Click on any page</strong> in the Visual Selector below to discover its visuals</li>
-                <li><strong>Click on a discovered visual</strong> to select it for embedding</li>
-                <li><strong>Or manually enter</strong> page name and visual ID if you know them</li>
-                <li>The app will automatically embed the selected visual</li>
-              </ol>
+          <div className="visual-controls" style={{ 
+            marginTop: '15px', 
+            display: 'flex', 
+            gap: '15px', 
+            alignItems: 'center',
+            flexWrap: 'wrap'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <label style={{ fontSize: '14px', color: 'white', fontWeight: '500' }}>Page:</label>
+              <select 
+                value={pageName}
+                onChange={(e) => setPageName(e.target.value)}
+                style={{ 
+                  padding: '6px 10px', 
+                  borderRadius: '4px', 
+                  border: 'none', 
+                  fontSize: '14px',
+                  width: '160px',
+                  backgroundColor: 'white'
+                }}
+              >
+                <option value="">Select a page...</option>
+                {discoveredPages.map((page) => (
+                  <option key={page.name} value={page.name}>
+                    {page.displayName || page.name}
+                  </option>
+                ))}
+              </select>
             </div>
-            
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-              <div style={{ marginBottom: '15px', display: 'flex', gap: '10px', alignItems: 'center', flexShrink: 0 }}>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontSize: '14px', fontWeight: '600' }}>Page Name:</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <label style={{ fontSize: '14px', color: 'white', fontWeight: '500' }}>Visual IDs:</label>
+              <input 
+                type="text" 
+                placeholder="visual1, visual2" 
+                value={visualIds.join(', ')}
+                onChange={(e) => setVisualIds(e.target.value.split(',').map(id => id.trim()).filter(id => id))}
+                style={{ 
+                  padding: '6px 10px', 
+                  borderRadius: '4px', 
+                  border: 'none', 
+                  fontSize: '14px',
+                  width: '200px'
+                }}
+              />
+              {visualIds.length > 0 && (
+                <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.8)' }}>
+                  ({visualIds.length} selected)
+                </span>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <button 
+                onClick={clearAllVisuals} 
+                style={{ 
+                  padding: '6px 12px', 
+                  fontSize: '12px', 
+                  background: 'rgba(255,255,255,0.2)', 
+                  color: 'white', 
+                  border: 'none', 
+                  borderRadius: '4px', 
+                  cursor: 'pointer' 
+                }}
+              >
+                Clear
+              </button>
+              {visualIds.length > 1 && (
+                <label style={{ fontSize: '12px', color: 'white', display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <input 
-                    type="text" 
-                    placeholder="Enter Page Name (e.g., 'ReportSection')" 
-                    value={pageName}
-                    onChange={(e) => setPageName(e.target.value)}
-                    style={{ padding: '8px', width: '200px', fontFamily: 'monospace' }}
+                    type="checkbox" 
+                    checked={crossFilterEnabled} 
+                    onChange={(e) => setCrossFilterEnabled(e.target.checked)}
                   />
-                </div>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontSize: '14px', fontWeight: '600' }}>Visual IDs:</label>
-                  <input 
-                    type="text" 
-                    placeholder="Enter Visual IDs (comma-separated)" 
-                    value={visualIds.join(', ')}
-                    onChange={(e) => setVisualIds(e.target.value.split(',').map(id => id.trim()).filter(id => id))}
-                    style={{ padding: '8px', width: '300px', fontFamily: 'monospace' }}
-                  />
-                  {visualIds.length > 0 && (
-                    <div style={{ marginTop: '4px', fontSize: '12px', color: '#666' }}>
-                      {visualIds.length} visual{visualIds.length !== 1 ? 's' : ''} selected
-                    </div>
-                  )}
-                </div>
-                <div style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <button onClick={clearAllVisuals} style={{ padding: '8px' }}>
-                    Clear All
-                  </button>
-                  {visualIds.length > 1 && (
-                    <label style={{ fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <input 
-                        type="checkbox" 
-                        checked={crossFilterEnabled} 
-                        onChange={(e) => setCrossFilterEnabled(e.target.checked)}
-                      />
-                      Enable Cross-Filtering
-                    </label>
-                  )}
-                </div>
-              </div>
-              <div style={{ flex: 1, minHeight: 0 }}>
-                <VisualSelector 
-                  onVisualSelect={handleVisualSelect}
-                  onPageSelect={handlePageSelect}
-                  selectedVisualIds={visualIds}
-                  selectedPageName={pageName}
-                />
-              </div>
+                  Cross-filter
+                </label>
+              )}
             </div>
           </div>
         )}
+
+
       </header>
       <div className="App-content">
         <div className="report-section">
