@@ -211,7 +211,7 @@
 
 .multi-visual-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+  grid-template-columns: 1fr 1fr;
   gap: 16px;
   overflow-y: auto;
   flex: 1;
@@ -228,6 +228,44 @@
   flex-direction: column;
   width: 100%;
   color: var(--text-primary);
+}
+
+.visual-placeholder {
+  border: 2px dashed var(--border-color);
+  border-radius: 8px;
+  background: #f8f9fa;
+  min-height: 250px;
+  max-height: 350px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  color: #666;
+}
+
+.visual-placeholder:hover {
+  border-color: var(--accent-color);
+  background: #f0f2f5;
+  color: var(--accent-color);
+}
+
+.placeholder-content {
+  text-align: center;
+  user-select: none;
+}
+
+.plus-icon {
+  font-size: 48px;
+  font-weight: 300;
+  margin-bottom: 8px;
+  line-height: 1;
+}
+
+.placeholder-text {
+  font-size: 14px;
+  font-weight: 500;
+  opacity: 0.8;
 }
 
 .visual-label {

@@ -277,12 +277,12 @@ function App() {
       </header>
       <div className="App-content">
         <div className="report-section">
-          {embedType === 'visual' && visualIds.length > 1 ? (
-            /* Render multiple visuals */
+          {embedType === 'visual' ? (
+            /* Render visual grid with placeholder */
             <div className="multi-visual-container">
               <div className="multi-visual-header">
-                <h3>📊 Multiple Visuals ({visualIds.length} selected)</h3>
-                {crossFilterEnabled && (
+                <h3>📊 Visual Canvas ({visualIds.length} visual{visualIds.length !== 1 ? 's' : ''} selected)</h3>
+                {visualIds.length > 1 && crossFilterEnabled && (
                   <p style={{ margin: '4px 0', fontSize: '12px', color: '#666' }}>
                     🔗 Cross-filtering enabled - Click on data points to filter other visuals
                   </p>
@@ -295,19 +295,30 @@ function App() {
                       embedType="visual"
                       visualId={visualId}
                       pageName={pageName}
-                      onDataSelected={crossFilterEnabled ? handleVisualDataSelected : undefined}
+                      onDataSelected={crossFilterEnabled && visualIds.length > 1 ? handleVisualDataSelected : undefined}
                       onVisualRef={registerVisualRef}
                     />
                   </div>
                 ))}
+                {/* Placeholder tile for adding new visuals */}
+                <div className="visual-placeholder" onClick={() => {
+                  // Focus on the visual ID input to encourage adding a visual
+                  const visualInput = document.querySelector('.visual-controls input') as HTMLInputElement;
+                  if (visualInput) {
+                    visualInput.focus();
+                  }
+                }}>
+                  <div className="placeholder-content">
+                    <div className="plus-icon">+</div>
+                    <div className="placeholder-text">Add Visual</div>
+                  </div>
+                </div>
               </div>
             </div>
           ) : (
-            /* Render single visual or report */
+            /* Render full report */
             <PowerBIReport 
               embedType={embedType}
-              visualId={embedType === 'visual' && visualIds.length > 0 ? visualIds[0] : undefined}
-              pageName={embedType === 'visual' ? pageName : undefined}
             />
           )}
         </div>
