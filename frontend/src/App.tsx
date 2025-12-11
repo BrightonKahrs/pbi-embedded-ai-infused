@@ -25,6 +25,7 @@ function App() {
   const [visualIds, setVisualIds] = useState<string[]>([]);
   const [pageName, setPageName] = useState<string>('');  
   const [discoveredPages, setDiscoveredPages] = useState<any[]>([]);
+  const [theme, setTheme] = useState<'light' | 'dark' | 'highContrast'>('light');
   
   // Store references to embedded visuals for cross-filtering
   const visualRefsMap = useRef<Map<string, any>>(new Map());
@@ -42,6 +43,11 @@ function App() {
     };
     loadPages();
   }, []);
+
+  // Apply theme to document
+  useEffect(() => {
+    document.documentElement.className = `theme-${theme}`;
+  }, [theme]);
 
   const handleVisualSelect = (selectedVisualId: string) => {
     setVisualIds(prev => {
@@ -144,8 +150,31 @@ function App() {
   return (
     <div className="App">
       <header className="App-header">
-        <h1>📊 Power BI Embedded with AI</h1>
-        <p>Analyze your data with AI-powered insights</p>
+        <div className="header-top">
+          <div className="header-content">
+            <h1>📊 Power BI Embedded with AI</h1>
+            <p>Analyze your data with AI-powered insights</p>
+          </div>
+          <div className="theme-selector">
+            <label style={{ fontSize: '14px', color: 'white', fontWeight: '500', marginRight: '8px' }}>Theme:</label>
+            <select 
+              value={theme}
+              onChange={(e) => setTheme(e.target.value as 'light' | 'dark' | 'highContrast')}
+              style={{ 
+                padding: '6px 10px', 
+                borderRadius: '4px', 
+                border: 'none', 
+                fontSize: '14px',
+                backgroundColor: 'white',
+                cursor: 'pointer'
+              }}
+            >
+              <option value="light">Light Mode</option>
+              <option value="dark">Dark Mode</option>
+              <option value="highContrast">High Contrast</option>
+            </select>
+          </div>
+        </div>
         
         {/* Tab controls */}
         <div className="tab-controls" style={{ marginTop: '20px' }}>
@@ -262,10 +291,6 @@ function App() {
               <div className="multi-visual-grid">
                 {visualIds.map((visualId, index) => (
                   <div key={visualId} className="visual-container">
-                    <div className="visual-label">
-                      Visual {index + 1}: {visualId}
-                      {crossFilterEnabled && <span style={{ color: '#007acc', marginLeft: '8px' }}>🔗</span>}
-                    </div>
                     <PowerBIReport 
                       embedType="visual"
                       visualId={visualId}

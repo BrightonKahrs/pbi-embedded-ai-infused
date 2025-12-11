@@ -118,14 +118,6 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageN
 
   return (
     <div className="powerbi-container">
-      <div className="powerbi-header">
-        <h3>
-          {embedType === 'visual' ? '🎨 Visual' : '📊 Report'} Embedding
-          {embedType === 'visual' && visualId && (
-            <span className="visual-id-display"> - {visualId}</span>
-          )}
-        </h3>
-      </div>
       <PowerBIEmbed
         embedConfig={embedConfig}
         cssClassName="powerbi-report-frame"
