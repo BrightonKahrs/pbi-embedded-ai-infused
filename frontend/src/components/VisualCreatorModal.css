@@ -53,6 +53,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
 }
 
 .modal-header h2 {
@@ -60,6 +61,23 @@
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
+  flex: 1;
+}
+
+.back-button {
+  background: none;
+  border: none;
+  font-size: 14px;
+  color: var(--accent-color);
+  cursor: pointer;
+  padding: 8px 12px;
+  border-radius: 4px;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.back-button:hover {
+  background: var(--bg-secondary);
 }
 
 .close-button {
@@ -143,6 +161,65 @@
   font-size: 14px;
   font-weight: 500;
   word-wrap: break-word;
+}
+
+/* Options Grid */
+.options-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.option-card {
+  background: var(--bg-secondary);
+  border: 2px solid transparent;
+  border-radius: 12px;
+  padding: 24px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  text-align: left;
+  width: 100%;
+}
+
+.option-card:hover {
+  border-color: var(--accent-color);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px var(--shadow);
+  background: var(--bg-surface);
+}
+
+.option-icon {
+  font-size: 48px;
+  flex-shrink: 0;
+  width: 64px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-surface);
+  border-radius: 12px;
+}
+
+.option-content {
+  flex: 1;
+}
+
+.option-content h4 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 8px 0;
+}
+
+.option-content p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.5;
 }
 
 /* Input Field Wrapper */

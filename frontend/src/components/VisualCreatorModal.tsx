@@ -33,12 +33,14 @@ const VisualCreatorModal: React.FC<VisualCreatorModalProps> = ({
   discoveredPages,
   availableVisuals
 }) => {
+  const [currentView, setCurrentView] = useState<'options' | 'existing'>('options');
   const [selectedPage, setSelectedPage] = useState<string>('');
   const [selectedVisualId, setSelectedVisualId] = useState<string>('');
 
   // Reset form when modal opens
   useEffect(() => {
     if (isOpen) {
+      setCurrentView('options');
       setSelectedPage('');
       setSelectedVisualId('');
     }
@@ -55,11 +57,89 @@ const VisualCreatorModal: React.FC<VisualCreatorModalProps> = ({
 
   if (!isOpen) return null;
 
+  // Options view - show three choices
+  if (currentView === 'options') {
+    return (
+      <div className="modal-overlay" onClick={onClose}>
+        <div className="modal-container" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">
+            <h2>Add Visual to Canvas</h2>
+            <button className="close-button" onClick={onClose} aria-label="Close">
+              ✕
+            </button>
+          </div>
+
+          <div className="modal-body">
+            <div className="modal-section">
+              <h3>Choose how to add a visual</h3>
+              <p className="section-description">Select one of the options below</p>
+              
+              <div className="options-grid">
+                <button 
+                  className="option-card"
+                  onClick={() => setCurrentView('existing')}
+                >
+                  <div className="option-icon">📊</div>
+                  <div className="option-content">
+                    <h4>Add from existing report</h4>
+                    <p>Select a visual from your Power BI report</p>
+                  </div>
+                </button>
+
+                <button 
+                  className="option-card"
+                  onClick={() => {
+                    // TODO: Implement author visual
+                    console.log('Author visual clicked');
+                  }}
+                >
+                  <div className="option-icon">✏️</div>
+                  <div className="option-content">
+                    <h4>Author visual</h4>
+                    <p>Create a new visual from scratch</p>
+                  </div>
+                </button>
+
+                <button 
+                  className="option-card"
+                  onClick={() => {
+                    // TODO: Implement author visual with AI
+                    console.log('Author visual with AI clicked');
+                  }}
+                >
+                  <div className="option-icon">🤖</div>
+                  <div className="option-content">
+                    <h4>Author visual with AI</h4>
+                    <p>Let AI help you create a custom visual</p>
+                  </div>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="modal-footer">
+            <button className="btn-cancel" onClick={onClose}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Existing report view - the current implementation
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-container" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>Add Visual to Canvas</h2>
+          <button 
+            className="back-button" 
+            onClick={() => setCurrentView('options')}
+            aria-label="Back to options"
+          >
+            ← Back
+          </button>
+          <h2>Add from Existing Report</h2>
           <button className="close-button" onClick={onClose} aria-label="Close">
             ✕
           </button>
