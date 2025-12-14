@@ -21,6 +21,23 @@ export interface PowerBIConfig {
   embedUrl: string;
   accessToken: string;
   embedType: string;
+  visualName?: string;
+  pageName?: string;
+}
+
+export interface PowerBIVisual {
+  visualId: string;
+  title: string;
+  type: string;
+}
+
+export interface PowerBIVisualsResponse {
+  totalPages: number;
+  pages: { [pageName: string]: PowerBIVisual[] };
+  pagesInfo: any[];
+  visualsInfo?: any[]; // Array of all visuals with their page info
+  note: string;
+  instructions: string;
 }
 
 const apiClient = axios.create({
@@ -47,8 +64,14 @@ export const apiService = {
   },
 
   // Power BI endpoints
-  async getPowerBIConfig(): Promise<PowerBIConfig> {
-    const response = await apiClient.get<PowerBIConfig>('/api/powerbi/config');
+  async getPowerBIConfig(visualId?: string): Promise<PowerBIConfig> {
+    const url = visualId ? `/api/powerbi/config?visual_id=${encodeURIComponent(visualId)}` : '/api/powerbi/config';
+    const response = await apiClient.get<PowerBIConfig>(url);
+    return response.data;
+  },
+
+  async getPowerBIVisuals(): Promise<PowerBIVisualsResponse> {
+    const response = await apiClient.get<PowerBIVisualsResponse>('/api/powerbi/visuals');
     return response.data;
   },
 

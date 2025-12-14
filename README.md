@@ -2,6 +2,10 @@
 
 A full-stack application that integrates Power BI Embedded with AI-powered chat capabilities using Microsoft Agent Framework.
 
+## 🎯 New: Visual Embedding Support
+
+This application now supports **both full report and specific visual embedding**! See the [Visual Embedding Guide](./VISUAL_EMBEDDING_GUIDE.md) for detailed instructions on how to embed specific visuals from your Power BI reports.
+
 ## 🏗️ Architecture
 
 This project consists of two main components:

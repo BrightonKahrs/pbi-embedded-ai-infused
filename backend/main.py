@@ -49,7 +49,10 @@ class ChatResponse(BaseModel):
 class PowerBIConfig(BaseModel):
     embedUrl: str
     accessToken: str
-    embedType: str = "report"
+    embedType: str = "report"  # "report" or "visual"
+    visualId: Optional[str] = None
+    reportId: Optional[str] = None
+    workspaceId: Optional[str] = None
 
 # In-memory conversation history (in production, use a database)
 conversation_history = []
@@ -61,7 +64,8 @@ powerbi_token_info = {
     "reportId": "",
     "workspaceId": "",
     "tokenExpiry": "",
-    "reportName": ""
+    "reportName": "",
+    "visuals": []  # List of available visuals
 }
 
 async def generate_powerbi_token():
@@ -163,20 +167,39 @@ async def clear_chat_history():
     return {"message": "Chat history cleared"}
 
 @app.get("/api/powerbi/config")
-async def get_powerbi_config():
+async def get_powerbi_config(visual_id: Optional[str] = None):
     """
     Get Power BI configuration
     Uses dynamically generated embed token from Azure CLI authentication
+    
+    Args:
+        visual_id: Optional visual ID for visual-specific embedding
     """
     global powerbi_token_info
     
     # Check if we have generated token info
     if powerbi_token_info.get("embedUrl") and powerbi_token_info.get("embedToken"):
         logger.info("Using dynamically generated Power BI token")
+        
+        embed_url = powerbi_token_info["embedUrl"]
+        embed_type = "report"
+        
+        # If visual_id is specified, modify for visual embedding
+        if visual_id:
+            embed_type = "visual"
+            # For visual embedding, we'll use the same embed URL
+            # The visual-specific targeting will be handled by the frontend PowerBI client
+            # Visual IDs should be provided by user or discovered client-side
+            logger.info(f"Configured for visual embedding with visual ID: {visual_id}")
+            logger.info("Note: Visual targeting will be handled by frontend PowerBI client")
+        
         return PowerBIConfig(
-            embedUrl=powerbi_token_info["embedUrl"],
+            embedUrl=embed_url,
             accessToken=powerbi_token_info["embedToken"],
-            embedType="report"
+            embedType=embed_type,
+            visualId=visual_id,
+            reportId=powerbi_token_info.get("reportId"),
+            workspaceId=powerbi_token_info.get("workspaceId")
         )
     
     # Fallback to environment variables
@@ -239,7 +262,40 @@ async def get_powerbi_status():
             "POWERBI_WORKSPACE_ID": bool(os.getenv("POWERBI_WORKSPACE_ID")),
             "POWERBI_EMBED_URL": bool(os.getenv("POWERBI_EMBED_URL")),
             "POWERBI_ACCESS_TOKEN": bool(os.getenv("POWERBI_ACCESS_TOKEN"))
-        }
+        },
+        "visualsAvailable": len(powerbi_token_info.get("visuals", []))
+    }
+
+@app.get("/api/powerbi/visuals")
+async def get_powerbi_visuals():
+    """
+    Get list of available visuals in the report
+    """
+    global powerbi_token_info
+    
+    # Check if Power BI token is available
+    if not powerbi_token_info.get("embedToken"):
+        raise HTTPException(
+            status_code=404,
+            detail="No Power BI report loaded. Make sure POWERBI_REPORT_ID is configured and the app has generated a token."
+        )
+    
+    # Get pages information (visuals not available through REST API)
+    pages_data = powerbi_token_info.get("pages", [])
+    
+    if not pages_data:
+        raise HTTPException(
+            status_code=404,
+            detail="No pages found in the report. This might be due to permissions or the report structure."
+        )
+    
+    # Return page information with note about visual discovery
+    return {
+        "totalPages": len(pages_data),
+        "pages": {page.get("displayName", page.get("name", "Unknown")): [] for page in pages_data},
+        "pagesInfo": pages_data,
+        "note": "Visual discovery requires client-side JavaScript API after report embedding",
+        "instructions": "To discover visuals, embed the report first and use PowerBI JavaScript client API methods like report.getPages() and page.getVisuals()"
     }
 
 @app.get("/api/azure/auth-test")

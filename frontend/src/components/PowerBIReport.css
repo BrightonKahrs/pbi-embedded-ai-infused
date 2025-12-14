@@ -4,16 +4,44 @@
   display: flex;
   flex-direction: column;
   position: relative;
-  background: #f5f5f5;
+  background: var(--bg-secondary, #f5f5f5);
   border-radius: 8px;
   overflow: hidden;
+  flex: 1;
+  min-width: 0;
+}
+
+.powerbi-header {
+  background: #fff;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e0e0e0;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.powerbi-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #333;
+  display: flex;
+  align-items: center;
+}
+
+.visual-id-display {
+  font-size: 12px;
+  color: #666;
+  font-weight: normal;
+  margin-left: 8px;
+  font-family: monospace;
 }
 
 .powerbi-report-frame {
-  width: 100%;
+  width: 100% !important;
   height: 100%;
   border: none;
-  min-height: 500px;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  max-width: none;
 }
 
 .loading-state,
@@ -22,9 +50,10 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px;
+  padding: 20px;
   height: 100%;
-  min-height: 400px;
+  min-height: 200px;
+  flex: 1;
 }
 
 .loading-state {
@@ -47,10 +76,10 @@
 }
 
 .error-state {
-  background: #fff;
+  background: var(--bg-surface, #fff);
   border: 2px solid #ff6b6b;
   border-radius: 8px;
-  color: #333;
+  color: var(--text-primary, #333);
   text-align: center;
 }
 
@@ -60,12 +89,12 @@
 }
 
 .error-state p {
-  color: #666;
+  color: var(--text-secondary, #666);
   margin-bottom: 20px;
 }
 
 .setup-instructions {
-  background: #f8f9fa;
+  background: var(--bg-secondary, #f8f9fa);
   padding: 20px;
   border-radius: 4px;
   text-align: left;
@@ -75,7 +104,7 @@
 
 .setup-instructions h4 {
   margin-top: 0;
-  color: #333;
+  color: var(--text-primary, #333);
 }
 
 .setup-instructions ol {
@@ -85,7 +114,7 @@
 
 .setup-instructions li {
   margin: 8px 0;
-  color: #555;
+  color: var(--text-secondary, #555);
 }
 
 .setup-instructions code {

@@ -109,6 +109,54 @@ class PowerBITokenGenerator:
             print(f"Error getting reports: {response.status_code} - {response.text}")
             return {"value": []}
     
+    def get_report_pages(self, report_id: str, workspace_id: Optional[str] = None) -> Dict:
+        """
+        Get list of pages in a Power BI report
+        
+        Args:
+            report_id: The Power BI report ID
+            workspace_id: Optional workspace ID
+        """
+        if not self.access_token:
+            self.access_token = self.get_azure_access_token()
+        
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        if workspace_id:
+            url = f"{self.base_url}/groups/{workspace_id}/reports/{report_id}/pages"
+        else:
+            url = f"{self.base_url}/reports/{report_id}/pages"
+        
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Error getting report pages: {response.status_code} - {response.text}")
+            return {"value": []}
+    
+    def get_visual_embed_url(self, report_id: str, page_name: str, visual_name: str, workspace_id: Optional[str] = None) -> str:
+        """
+        Generate embed URL for a specific visual
+        
+        Args:
+            report_id: The Power BI report ID
+            page_name: The page name
+            visual_name: The visual name
+            workspace_id: Optional workspace ID
+        """
+        if workspace_id:
+            base_embed_url = f"https://app.powerbi.com/reportEmbed?reportId={report_id}&groupId={workspace_id}"
+        else:
+            base_embed_url = f"https://app.powerbi.com/reportEmbed?reportId={report_id}"
+        
+        # Add page and visual parameters for visual embedding
+        visual_embed_url = f"{base_embed_url}&pageName={page_name}&visualName={visual_name}"
+        return visual_embed_url
+    
     def generate_embed_token(self, report_id: str, workspace_id: Optional[str] = None) -> Dict:
         """
         Generate embed token for a Power BI report (User Owns Data scenario)
@@ -156,13 +204,25 @@ class PowerBITokenGenerator:
             if report_response.status_code == 200:
                 report_details = report_response.json()
                 
+                # Get report pages and visuals
+                pages = self.get_report_pages(report_id, workspace_id)
+                visuals = []
+                
+                # Visual discovery is not available through Power BI REST API
+                # Visuals must be discovered client-side after report embedding
+                # For now, we'll provide page information and let client handle visual discovery
+                logger.info("Note: Visual discovery requires client-side JavaScript API after report embedding")
+                
                 return {
                     "embedToken": token_info.get("token"),
                     "tokenExpiry": token_info.get("expiration"),
                     "embedUrl": report_details.get("embedUrl"),
                     "reportId": report_id,
                     "workspaceId": workspace_id,
-                    "reportName": report_details.get("name", "Unknown")
+                    "reportName": report_details.get("name", "Unknown"),
+                    "pages": pages.get("value", []) if pages else [],
+                    "visuals": visuals,  # Empty - visual discovery requires client-side API
+                    "visualDiscoveryNote": "Visual discovery requires client-side JavaScript API after report embedding"
                 }
             else:
                 print(f"Warning: Could not get report details: {report_response.status_code}")
@@ -172,7 +232,8 @@ class PowerBITokenGenerator:
                     "embedUrl": f"https://app.powerbi.com/reportEmbed?reportId={report_id}" + (f"&groupId={workspace_id}" if workspace_id else ""),
                     "reportId": report_id,
                     "workspaceId": workspace_id,
-                    "reportName": "Unknown"
+                    "reportName": "Unknown",
+                    "visuals": []
                 }
         else:
             print(f"Error generating embed token: {response.status_code} - {response.text}")
