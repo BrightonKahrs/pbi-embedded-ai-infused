@@ -1,4 +1,25 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { models, service, factories } from 'powerbi-client';
+import { apiService } from '../../services/api';
+
+/**
+ * AuthorVisualView - Live Visual Creation Component
+ * 
+ * This component implements Power BI's visual authoring capability, allowing users to:
+ * 1. Select a visual type (column, bar, line, pie, card, table)
+ * 2. Configure data fields by mapping them to visual data roles
+ * 3. Customize visual properties (title, legend, axes)
+ * 4. See the visual update in real-time as they make changes
+ * 
+ * Implementation based on Microsoft's PowerBI-Embedded-Showcases:
+ * - Uses Power BI's createVisual API for live visual creation
+ * - Implements addDataField/removeDataField for data binding
+ * - Uses setProperty API for visual formatting
+ * - Requires Edit permissions and ViewMode.Edit on the report
+ * 
+ * The visual is created in an embedded Power BI report in edit mode,
+ * showing a live preview as the user configures it.
+ */
 
 interface VisualType {
   name: string;
@@ -13,14 +34,31 @@ interface AuthorVisualViewProps {
 }
 
 const VISUAL_TYPES: VisualType[] = [
-  { name: 'columnChart', displayName: 'Column Chart', dataRoles: ['Category', 'Values'], icon: '📊' },
-  { name: 'barChart', displayName: 'Bar Chart', dataRoles: ['Category', 'Values'], icon: '📈' },
-  { name: 'lineChart', displayName: 'Line Chart', dataRoles: ['Category', 'Values'], icon: '📉' },
-  { name: 'pieChart', displayName: 'Pie Chart', dataRoles: ['Category', 'Values'], icon: '🥧' },
-  { name: 'card', displayName: 'Card', dataRoles: ['Values'], icon: '🃏' },
+  { name: 'columnChart', displayName: 'Column Chart', dataRoles: ['Category', 'Y'], icon: '📊' },
+  { name: 'barChart', displayName: 'Bar Chart', dataRoles: ['Category', 'Y'], icon: '📈' },
+  { name: 'lineChart', displayName: 'Line Chart', dataRoles: ['Category', 'Y'], icon: '📉' },
+  { name: 'pieChart', displayName: 'Pie Chart', dataRoles: ['Category', 'Y'], icon: '🥧' },
+  { name: 'card', displayName: 'Card', dataRoles: ['Y'], icon: '🃏' },
   { name: 'table', displayName: 'Table', dataRoles: ['Values'], icon: '📋' },
-  { name: 'map', displayName: 'Map', dataRoles: ['Location', 'Values'], icon: '🗺️' },
 ];
+
+// Data field mapping - these would come from your actual report data model
+const DATA_FIELD_TARGETS: any = {
+  'Sales': { table: 'Sales', column: 'TotalSales' },
+  'Revenue': { table: 'Sales', column: 'Revenue' },
+  'Quantity': { table: 'Sales', column: 'Quantity' },
+  'Product': { table: 'Products', column: 'ProductName' },
+  'Category': { table: 'Products', column: 'Category' },
+  'Date': { table: 'Calendar', column: 'Date' },
+  'Region': { table: 'Geography', column: 'Region' },
+};
+
+// Property schemas for Power BI
+const SCHEMAS = {
+  column: 'http://powerbi.com/product/schema#column',
+  measure: 'http://powerbi.com/product/schema#measure',
+  property: 'http://powerbi.com/product/schema#property',
+};
 
 const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({ onClose, onBack }) => {
   const [selectedVisualType, setSelectedVisualType] = useState<VisualType | null>(null);
@@ -33,10 +71,264 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({ onClose, onBack }) 
   });
   const [visualTitle, setVisualTitle] = useState<string>('');
   const [titleAlignment, setTitleAlignment] = useState<'left' | 'center' | 'right'>('left');
+  
+  // Power BI authoring state
+  const [report, setReport] = useState<any>(null);
+  const [page, setPage] = useState<any>(null);
+  const [createdVisual, setCreatedVisual] = useState<any>(null);
+  const [isLoadingReport, setIsLoadingReport] = useState<boolean>(true);
+  const previewContainerRef = useRef<HTMLDivElement>(null);
+
+  // Initialize Power BI report for visual authoring
+  useEffect(() => {
+    initializeAuthoringReport();
+    return () => {
+      // Cleanup on unmount
+      if (report) {
+        try {
+          report.off('loaded');
+        } catch (err) {
+          console.error('Error cleaning up report:', err);
+        }
+      }
+    };
+  }, []);
+
+  const initializeAuthoringReport = async () => {
+    try {
+      setIsLoadingReport(true);
+      const config = await apiService.getPowerBIConfig();
+      
+      if (!previewContainerRef.current) return;
+
+      const powerbi = new service.Service(
+        factories.hpmFactory,
+        factories.wpmpFactory,
+        factories.routerFactory
+      );
+
+      const embedConfig: models.IReportEmbedConfiguration = {
+        type: 'report',
+        embedUrl: config.embedUrl,
+        accessToken: config.accessToken,
+        tokenType: models.TokenType.Embed,
+        permissions: models.Permissions.All, // Need edit permissions for authoring
+        viewMode: models.ViewMode.Edit, // Edit mode for creating visuals
+        settings: {
+          panes: {
+            filters: { visible: false },
+            pageNavigation: { visible: false },
+          },
+          background: models.BackgroundType.Transparent,
+          layoutType: models.LayoutType.Custom,
+          visualSettings: {
+            visualHeaders: [
+              {
+                settings: {
+                  visible: false // Hide visual headers in authoring mode
+                }
+              }
+            ]
+          }
+        },
+      };
+
+      const embeddedReport = powerbi.embed(previewContainerRef.current, embedConfig) as any;
+      
+      embeddedReport.on('loaded', async () => {
+        console.log('Authoring report loaded');
+        const pages = await embeddedReport.getPages();
+        if (pages && pages.length > 0) {
+          // Try to find "Page 1" first, otherwise use first page
+          let targetPage = pages.find((p: any) => p.displayName === 'Page 1');
+          if (!targetPage) {
+            targetPage = pages[0];
+          }
+          await targetPage.setActive();
+          setReport(embeddedReport);
+          setPage(targetPage);
+          setIsLoadingReport(false);
+        }
+      });
+
+      embeddedReport.on('error', (event: any) => {
+        console.error('Report error:', event.detail);
+        setIsLoadingReport(false);
+      });
+
+    } catch (error) {
+      console.error('Failed to initialize authoring report:', error);
+      setIsLoadingReport(false);
+    }
+  };
+
+  // Create or update visual when type or data fields change
+  useEffect(() => {
+    if (selectedVisualType && page && !isLoadingReport) {
+      createOrUpdateVisual();
+    }
+  }, [selectedVisualType, page, isLoadingReport]);
+
+  // Update visual data when fields change
+  useEffect(() => {
+    if (createdVisual && Object.keys(dataFields).length > 0) {
+      updateVisualData();
+    }
+  }, [dataFields, createdVisual]);
+
+  // Update visual properties when they change
+  useEffect(() => {
+    if (createdVisual) {
+      updateVisualProperties();
+    }
+  }, [visualProperties, visualTitle, titleAlignment, createdVisual]);
+
+  const createOrUpdateVisual = async () => {
+    if (!page || !selectedVisualType) return;
+
+    try {
+      // Delete existing visual if changing type
+      if (createdVisual) {
+        await page.deleteVisual(createdVisual.name);
+        setCreatedVisual(null);
+      }
+
+      // Get container dimensions for proper sizing
+      const containerWidth = previewContainerRef.current?.offsetWidth || 1240;
+      const containerHeight = previewContainerRef.current?.offsetHeight || 680;
+      
+      // Create new visual with layout (matches Microsoft showcase sizing)
+      const layout = {
+        x: (0.1 * containerWidth) / 2,
+        y: (0.2 * containerHeight) / 2,
+        width: containerWidth * 0.9,
+        height: containerHeight * 0.85,
+        displayState: {
+          mode: models.VisualContainerDisplayMode.Visible,
+        },
+      };
+
+      const newVisualResponse = await page.createVisual(selectedVisualType.name, layout);
+      const visual = newVisualResponse.visual;
+      
+      console.log('Visual created:', visual);
+      setCreatedVisual(visual);
+
+      // Set initial properties (matches Microsoft showcase)
+      await setVisualProperty(visual, 'titleSize', 25);
+      await setVisualProperty(visual, 'titleColor', '#000000');
+      
+      // Enable legend for pie chart by default
+      if (selectedVisualType.name === 'pieChart') {
+        await setVisualProperty(visual, 'legend', true);
+      }
+
+    } catch (error) {
+      console.error('Error creating visual:', error);
+    }
+  };
+
+  const updateVisualData = async () => {
+    if (!createdVisual || !selectedVisualType) return;
+
+    try {
+      // Get visual capabilities to map display names to data role names
+      const capabilities = await createdVisual.getCapabilities();
+      
+      // Add data fields to the visual
+      for (const [roleDisplayName, fieldName] of Object.entries(dataFields)) {
+        if (fieldName && DATA_FIELD_TARGETS[fieldName]) {
+          const target = DATA_FIELD_TARGETS[fieldName];
+          
+          // Find the actual data role name from display name
+          const dataRole = capabilities.dataRoles.find(
+            (dr: any) => dr.displayName === roleDisplayName
+          );
+          
+          if (!dataRole) continue;
+          const dataRoleName = dataRole.name;
+          
+          // Remove existing data field first
+          try {
+            const existingFields = await createdVisual.getDataFields(dataRoleName);
+            if (existingFields && existingFields.length > 0) {
+              await createdVisual.removeDataField(dataRoleName, 0);
+            }
+          } catch (err) {
+            // Field doesn't exist yet, that's ok
+          }
+
+          // Add new data field with proper schema
+          await createdVisual.addDataField(dataRoleName, {
+            column: target.column,
+            table: target.table,
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error updating visual data:', error);
+    }
+  };
+
+  const updateVisualProperties = async () => {
+    if (!createdVisual) return;
+
+    try {
+      // Update title visibility
+      await setVisualProperty(createdVisual, 'title', visualProperties.title);
+      
+      // Update title text if provided
+      if (visualProperties.title && visualTitle) {
+        await setVisualProperty(createdVisual, 'titleText', visualTitle);
+      } else if (visualProperties.title && !visualTitle) {
+        await createdVisual.resetProperty(propertyToSelector('titleText'));
+      }
+      
+      // Update title alignment
+      if (visualProperties.title) {
+        await setVisualProperty(createdVisual, 'titleAlign', titleAlignment);
+      }
+      
+      // Update legend (for charts)
+      if (selectedVisualType && selectedVisualType.name !== 'card' && selectedVisualType.name !== 'table') {
+        await setVisualProperty(createdVisual, 'legend', visualProperties.legend);
+      }
+      
+      // Update axes (for column, bar, line charts)
+      if (selectedVisualType && ['columnChart', 'barChart', 'lineChart'].includes(selectedVisualType.name)) {
+        await setVisualProperty(createdVisual, 'xAxis', visualProperties.xAxis);
+        await setVisualProperty(createdVisual, 'yAxis', visualProperties.yAxis);
+      }
+    } catch (error) {
+      console.error('Error updating visual properties:', error);
+    }
+  };
+
+  const setVisualProperty = async (visual: any, propertyName: string, value: any) => {
+    try {
+      const selector = propertyToSelector(propertyName);
+      await visual.setProperty(selector, { schema: SCHEMAS.property, value });
+    } catch (error) {
+      console.error(`Error setting property ${propertyName}:`, error);
+    }
+  };
+
+  const propertyToSelector = (propertyName: string) => {
+    const selectorMap: any = {
+      title: { objectName: 'title', propertyName: 'visible' },
+      xAxis: { objectName: 'categoryAxis', propertyName: 'visible' },
+      yAxis: { objectName: 'valueAxis', propertyName: 'visible' },
+      legend: { objectName: 'legend', propertyName: 'visible' },
+      titleText: { objectName: 'title', propertyName: 'titleText' },
+      titleAlign: { objectName: 'title', propertyName: 'alignment' },
+      titleSize: { objectName: 'title', propertyName: 'textSize' },
+      titleColor: { objectName: 'title', propertyName: 'fontColor' },
+    };
+    return selectorMap[propertyName];
+  };
 
   const handleAuthorVisual = () => {
-    // TODO: Implement visual creation logic
-    console.log('Creating visual:', {
+    console.log('Visual created successfully:', {
       type: selectedVisualType,
       dataFields,
       properties: visualProperties,
@@ -90,20 +382,17 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({ onClose, onBack }) 
             {/* Data Fields Section */}
             {selectedVisualType && (
               <div className="modal-section">
-                <h3>Set your fields</h3>
+                <h3>Set your data fields</h3>
                 <div className="data-fields-wrapper">
                   {selectedVisualType.dataRoles.map((role) => (
                     <div key={role} className="field-row">
-                      <label htmlFor={`field-${role}`} className="field-label">
-                        {role}:
-                      </label>
+                      <label className="field-label">{role}</label>
                       <select
-                        id={`field-${role}`}
                         className="field-select"
                         value={dataFields[role] || ''}
                         onChange={(e) => setDataFields({ ...dataFields, [role]: e.target.value })}
                       >
-                        <option value="">Select {role}</option>
+                        <option value="">Select a field...</option>
                         <option value="Sales">Sales</option>
                         <option value="Revenue">Revenue</option>
                         <option value="Quantity">Quantity</option>
@@ -235,35 +524,27 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({ onClose, onBack }) 
           {/* Visual Preview Area */}
           <div className="visual-preview-area">
             <h3>Visual Preview</h3>
-            {!selectedVisualType && (
+            {isLoadingReport && (
+              <div className="preview-placeholder">
+                <div className="preview-icon-large">⏳</div>
+                <p>Loading authoring environment...</p>
+              </div>
+            )}
+            {!isLoadingReport && !selectedVisualType && (
               <div className="preview-placeholder">
                 <div className="preview-icon-large">✏️</div>
                 <p>Select a visual type to begin</p>
               </div>
             )}
-            {selectedVisualType && Object.keys(dataFields).length === 0 && (
-              <div className="preview-placeholder">
-                <div className="preview-icon-large">{selectedVisualType.icon}</div>
-                <p>Set data fields to preview</p>
-              </div>
-            )}
-            {selectedVisualType && Object.keys(dataFields).length > 0 && (
-              <div className="preview-content">
-                <div className="preview-visual-card">
-                  <div className="preview-visual-icon">{selectedVisualType.icon}</div>
-                  <h4>{visualTitle || selectedVisualType.displayName}</h4>
-                  <div className="preview-details-list">
-                    <p><strong>Type:</strong> {selectedVisualType.displayName}</p>
-                    <p><strong>Fields:</strong></p>
-                    <ul className="fields-list">
-                      {Object.entries(dataFields).map(([role, field]) => (
-                        <li key={role}>{role}: {field}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            )}
+            <div 
+              ref={previewContainerRef} 
+              className="powerbi-authoring-container"
+              style={{ 
+                width: '100%', 
+                height: '500px',
+                display: selectedVisualType ? 'block' : 'none'
+              }}
+            />
           </div>
         </div>
 
