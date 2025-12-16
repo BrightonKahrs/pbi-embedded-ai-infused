@@ -70,7 +70,7 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
         setIsLoadingReport(true);
         try {
           const config = await apiService.getPowerBIConfig();
-          // Modify config for edit mode
+          // Modify config for edit mode with custom layout to fit visual to page
           const editConfig = {
             type: 'report',
             embedUrl: config.embedUrl,
@@ -79,11 +79,33 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
             settings: {
               panes: {
                 filters: { visible: false },
-                pageNavigation: { visible: false }
+                pageNavigation: { visible: false },
+                fields: { visible: false },
+                visualizations: { visible: false },
+              },
+              bars: {
+                actionBar: { visible: false },
+                statusBar: { visible: false },
               },
               background: models.BackgroundType.Transparent,
+              // Use custom layout with FitToPage to zoom the report to fit the visual
+              layoutType: models.LayoutType.Custom,
+              customLayout: {
+                displayOption: models.DisplayOption.FitToPage,
+              },
+              // Hide visual headers (the ... menu on visuals)
+              visualSettings: {
+                visualHeaders: [
+                  {
+                    settings: {
+                      visible: false
+                    }
+                  }
+                ]
+              }
             },
-            viewMode: models.ViewMode.Edit,
+            // Use View mode - the createVisual API works in View mode and this hides the editing toolbar
+            viewMode: models.ViewMode.View,
             permissions: models.Permissions.All,
           };
           setEmbedConfig(editConfig);
@@ -185,56 +207,178 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
 
   // CREATE VISUAL when visual type is selected
   useEffect(() => {
-    // Skip if no page, no visual type, or already creating this type
+    // Skip if no page or no visual type selected
     if (!page || !visualType) return;
-    if (currentVisualTypeRef.current === visualType) return; // Already created this type
-    if (isCreatingRef.current) return; // Already in progress
+    
+    // Skip if we already have a visual of this exact type
+    if (liveVisualRef.current && currentVisualTypeRef.current === visualType) {
+      return;
+    }
+    
+    // Use an abort controller pattern to handle rapid changes
+    let cancelled = false;
     
     const createLiveVisual = async () => {
-      isCreatingRef.current = true;
-      currentVisualTypeRef.current = visualType;
+      const targetVisualType = visualType; // Capture for async safety
       
-      // Delete previous visual if exists
+      // Wait for any in-progress operation to finish
+      while (isCreatingRef.current) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        if (cancelled) return;
+      }
+      
+      // Double-check we still want this visual type
+      if (cancelled || currentVisualTypeRef.current === targetVisualType) {
+        return;
+      }
+      
+      isCreatingRef.current = true;
+      
+      // Delete previous visual if exists using page.deleteVisual (like the demo does)
       const existingVisual = liveVisualRef.current;
-      if (existingVisual) {
+      if (existingVisual && existingVisual.name) {
+        console.log('Deleting previous visual using page.deleteVisual:', existingVisual.name);
+        setLiveVisual(null);
+        liveVisualRef.current = null;
+        currentVisualTypeRef.current = ""; // Clear so we don't skip
         try {
-          console.log('Deleting previous visual...');
-          await existingVisual.delete();
+          // Use page.deleteVisual instead of visual.delete() - this is what the demo uses
+          await (page as any).deleteVisual(existingVisual.name);
+          console.log('Previous visual deleted successfully');
         } catch (error) {
           console.error('Error deleting previous visual:', error);
         }
-        setLiveVisual(null);
-        liveVisualRef.current = null;
+        // Small delay to ensure Power BI processes the deletion
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+      
+      // Check if cancelled while we were deleting
+      if (cancelled) {
+        isCreatingRef.current = false;
+        return;
       }
       
       try {
+        // Layout to fill the page - use large dimensions like the quick-create-visuals demo
+        // The visual will be scaled to fit with FitToPage display option
         const layout = {
-          x: 50,
-          y: 50,
-          width: 400,
-          height: 300,
+          x: 20,
+          y: 20,
+          width: 1240,
+          height: 680,
           displayState: { mode: 0 }
         };
 
-        console.log('Creating live visual:', visualType);
-        const visualResponse = await (page as any).createVisual(visualType, layout);
+        console.log('Creating live visual:', targetVisualType);
+        const visualResponse = await (page as any).createVisual(targetVisualType, layout);
         const visual = visualResponse.visual;
         
-        // Only update if we're still on the same visual type
-        if (currentVisualTypeRef.current === visualType) {
+        // Only keep if not cancelled
+        if (!cancelled) {
           setLiveVisual(visual);
           liveVisualRef.current = visual;
-          console.log('Live visual created successfully');
+          currentVisualTypeRef.current = targetVisualType;
+          console.log('Live visual created successfully:', targetVisualType, 'name:', visual.name);
+          
+          // Format visual properties for better readability (like quick-create-visuals demo)
+          try {
+            // Set larger title font size (demo uses 25)
+            await visual.setProperty(
+              { objectName: "title", propertyName: "textSize" },
+              { schema: schemas.property, value: 25 }
+            );
+            // Set title color to black for better contrast
+            await visual.setProperty(
+              { objectName: "title", propertyName: "fontColor" },
+              { schema: schemas.property, value: "#000000" }
+            );
+            
+            // Set larger X-axis (category axis) font sizes
+            await visual.setProperty(
+              { objectName: "categoryAxis", propertyName: "fontSize" },
+              { schema: schemas.property, value: 32 }
+            );
+            await visual.setProperty(
+              { objectName: "categoryAxis", propertyName: "titleFontSize" },
+              { schema: schemas.property, value: 32 }
+            );
+            await visual.setProperty(
+              { objectName: "categoryAxis", propertyName: "labelDisplayUnits" },
+              { schema: schemas.property, value: 32 }
+            );
+            
+            // Set larger Y-axis (value axis) font sizes
+            await visual.setProperty(
+              { objectName: "valueAxis", propertyName: "fontSize" },
+              { schema: schemas.property, value: 32 }
+            );
+            await visual.setProperty(
+              { objectName: "valueAxis", propertyName: "titleFontSize" },
+              { schema: schemas.property, value: 16 }
+            );
+            await visual.setProperty(
+              { objectName: "valueAxis", propertyName: "labelDisplayUnits" },
+              { schema: schemas.property, value: 32 }
+            );
+            
+            // Set larger data label font size
+            await visual.setProperty(
+              { objectName: "labels", propertyName: "fontSize" },
+              { schema: schemas.property, value: 32 }
+            );
+            
+            // Set larger legend font size
+            await visual.setProperty(
+              { objectName: "legend", propertyName: "fontSize" },
+              { schema: schemas.property, value: 32 }
+            );
+            
+            // Enable legend for pie charts (disabled by default)
+            if (targetVisualType === "pieChart" || targetVisualType === "donutChart") {
+              await visual.setProperty(
+                { objectName: "legend", propertyName: "visible" },
+                { schema: schemas.property, value: true }
+              );
+              // Set larger detail labels for pie/donut charts
+              await visual.setProperty(
+                { objectName: "labels", propertyName: "labelStyle" },
+                { schema: schemas.property, value: "Both" }
+              );
+            }
+          } catch (propError) {
+            console.log('Some visual properties could not be set:', propError);
+          }
+          
+          // Hide visual headers on the new visual (like the demo does)
+          const report = embeddedReportRef.current;
+          if (report) {
+            try {
+              await report.updateSettings({
+                visualSettings: {
+                  visualHeaders: [
+                    {
+                      settings: {
+                        visible: false
+                      }
+                    }
+                  ]
+                }
+              });
+            } catch (e) {
+              console.error('Error hiding visual headers:', e);
+            }
+          }
           
           // Reset data fields when creating new visual
           setDataFields({});
           prevDataFieldsRef.current = {};
         } else {
-          // Visual type changed while we were creating, delete this one
+          // Was cancelled, delete this visual using page.deleteVisual
+          console.log('Creation was cancelled, cleaning up...');
           try {
-            await visual.delete();
+            await (page as any).deleteVisual(visual.name);
           } catch (e) {
-            console.error('Error cleaning up stale visual:', e);
+            console.error('Error cleaning up cancelled visual:', e);
           }
         }
       } catch (error) {
@@ -245,8 +389,11 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
     };
 
     createLiveVisual();
-
-    createLiveVisual();
+    
+    // Cleanup function - cancels this effect if visual type changes
+    return () => {
+      cancelled = true;
+    };
   }, [visualType, page]);
 
   // UPDATE DATA FIELDS in real-time when they change
@@ -366,10 +513,12 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
 
   // Clean up visual when component unmounts or modal closes
   const cleanupVisual = async () => {
-    if (liveVisual) {
+    const visual = liveVisualRef.current;
+    if (visual && visual.name && page) {
       try {
-        await liveVisual.delete();
-        console.log('Cleaned up live visual');
+        // Use page.deleteVisual like the demo does
+        await (page as any).deleteVisual(visual.name);
+        console.log('Cleaned up live visual:', visual.name);
       } catch (error) {
         console.error('Error cleaning up visual:', error);
       }
