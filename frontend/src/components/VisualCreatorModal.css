@@ -1036,6 +1036,27 @@ input:checked + .toggle-slider:before {
   font-size: 20px;
 }
 
+/* Creating indicator for live visual creation */
+.creating-indicator {
+  color: var(--accent-color);
+  font-size: 13px;
+  font-style: italic;
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.creating-indicator::before {
+  content: '';
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--accent-color);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
 /* Responsive adjustments for split layout */
 @media (max-width: 900px) {
   .modal-body-split {

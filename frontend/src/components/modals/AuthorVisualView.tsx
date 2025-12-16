@@ -129,10 +129,25 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
   useEffect(() => {
     console.log('AuthorVisualView: page changed:', page ? 'Page available' : 'Page is null');
   }, [page]);
+
+  // Live visual reference - stores the created visual for real-time updates
+  const [liveVisual, setLiveVisual] = useState<any>(null);
+  const liveVisualRef = useRef<any>(null); // Ref to avoid stale closures
+  const isCreatingRef = useRef<boolean>(false); // Use ref to prevent race conditions
+  const currentVisualTypeRef = useRef<string>(""); // Track what type we're creating
+
   const [showLegend, setShowLegend] = useState<boolean>(true);
   const [showXAxis, setShowXAxis] = useState<boolean>(true);
   const [showYAxis, setShowYAxis] = useState<boolean>(true);
   const [isCreating, setIsCreating] = useState<boolean>(false);
+
+  // Track previous data fields to detect changes
+  const prevDataFieldsRef = useRef<{ [key: string]: string }>({});
+
+  // Sync liveVisual state with ref
+  useEffect(() => {
+    liveVisualRef.current = liveVisual;
+  }, [liveVisual]);
 
   // Get available data roles for selected visual type
   const getDataRoles = (): string[] => {
@@ -168,6 +183,199 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
     }
   };
 
+  // CREATE VISUAL when visual type is selected
+  useEffect(() => {
+    // Skip if no page, no visual type, or already creating this type
+    if (!page || !visualType) return;
+    if (currentVisualTypeRef.current === visualType) return; // Already created this type
+    if (isCreatingRef.current) return; // Already in progress
+    
+    const createLiveVisual = async () => {
+      isCreatingRef.current = true;
+      currentVisualTypeRef.current = visualType;
+      
+      // Delete previous visual if exists
+      const existingVisual = liveVisualRef.current;
+      if (existingVisual) {
+        try {
+          console.log('Deleting previous visual...');
+          await existingVisual.delete();
+        } catch (error) {
+          console.error('Error deleting previous visual:', error);
+        }
+        setLiveVisual(null);
+        liveVisualRef.current = null;
+      }
+      
+      try {
+        const layout = {
+          x: 50,
+          y: 50,
+          width: 400,
+          height: 300,
+          displayState: { mode: 0 }
+        };
+
+        console.log('Creating live visual:', visualType);
+        const visualResponse = await (page as any).createVisual(visualType, layout);
+        const visual = visualResponse.visual;
+        
+        // Only update if we're still on the same visual type
+        if (currentVisualTypeRef.current === visualType) {
+          setLiveVisual(visual);
+          liveVisualRef.current = visual;
+          console.log('Live visual created successfully');
+          
+          // Reset data fields when creating new visual
+          setDataFields({});
+          prevDataFieldsRef.current = {};
+        } else {
+          // Visual type changed while we were creating, delete this one
+          try {
+            await visual.delete();
+          } catch (e) {
+            console.error('Error cleaning up stale visual:', e);
+          }
+        }
+      } catch (error) {
+        console.error('Error creating live visual:', error);
+      } finally {
+        isCreatingRef.current = false;
+      }
+    };
+
+    createLiveVisual();
+
+    createLiveVisual();
+  }, [visualType, page]);
+
+  // UPDATE DATA FIELDS in real-time when they change
+  useEffect(() => {
+    const updateDataFields = async () => {
+      if (!liveVisual) return;
+
+      const prevFields = prevDataFieldsRef.current;
+      
+      for (const [dataRole, fieldName] of Object.entries(dataFields)) {
+        const prevFieldName = prevFields[dataRole];
+        
+        // Skip if no change
+        if (fieldName === prevFieldName) continue;
+        
+        try {
+          // If there was a previous field, we need to remove it first
+          // Note: The API doesn't have a direct "remove" - we'll just add the new one
+          
+          if (fieldName) {
+            const fieldInfo = fieldMapping[fieldName];
+            if (!fieldInfo) {
+              console.error(`Field mapping not found for: ${fieldName}`);
+              continue;
+            }
+            
+            const dataField: any = {
+              [fieldInfo.isMeasure ? "measure" : "column"]: fieldInfo.column,
+              table: fieldInfo.table,
+            };
+            
+            await liveVisual.addDataField(dataRole, dataField);
+            console.log(`Live update - Added data field: ${dataRole} = ${fieldInfo.table}[${fieldInfo.column}]`);
+          }
+        } catch (error) {
+          console.error(`Error updating data field ${dataRole}:`, error);
+        }
+      }
+      
+      // Update the previous fields reference
+      prevDataFieldsRef.current = { ...dataFields };
+    };
+
+    updateDataFields();
+  }, [dataFields, liveVisual]);
+
+  // UPDATE TITLE in real-time
+  useEffect(() => {
+    const updateTitle = async () => {
+      if (!liveVisual) return;
+      
+      try {
+        if (visualTitle) {
+          await liveVisual.setProperty(propertyToSelector("title"), {
+            schema: schemas.property,
+            value: true
+          });
+          await liveVisual.setProperty(propertyToSelector("titleText"), {
+            schema: schemas.property,
+            value: visualTitle
+          });
+        } else {
+          await liveVisual.setProperty(propertyToSelector("title"), {
+            schema: schemas.property,
+            value: false
+          });
+        }
+      } catch (error) {
+        console.error('Error updating title:', error);
+      }
+    };
+
+    // Debounce title updates
+    const timeoutId = setTimeout(updateTitle, 300);
+    return () => clearTimeout(timeoutId);
+  }, [visualTitle, liveVisual]);
+
+  // UPDATE LEGEND in real-time
+  useEffect(() => {
+    const updateLegend = async () => {
+      if (!liveVisual || !["pieChart", "lineChart", "areaChart", "donutChart"].includes(visualType)) return;
+      
+      try {
+        await liveVisual.setProperty(propertyToSelector("legend"), {
+          schema: schemas.property,
+          value: showLegend
+        });
+      } catch (error) {
+        console.error('Error updating legend:', error);
+      }
+    };
+
+    updateLegend();
+  }, [showLegend, liveVisual, visualType]);
+
+  // UPDATE AXES in real-time
+  useEffect(() => {
+    const updateAxes = async () => {
+      if (!liveVisual || !["columnChart", "barChart", "lineChart", "areaChart"].includes(visualType)) return;
+      
+      try {
+        await liveVisual.setProperty(propertyToSelector("xAxis"), {
+          schema: schemas.property,
+          value: showXAxis
+        });
+        await liveVisual.setProperty(propertyToSelector("yAxis"), {
+          schema: schemas.property,
+          value: showYAxis
+        });
+      } catch (error) {
+        console.error('Error updating axes:', error);
+      }
+    };
+
+    updateAxes();
+  }, [showXAxis, showYAxis, liveVisual, visualType]);
+
+  // Clean up visual when component unmounts or modal closes
+  const cleanupVisual = async () => {
+    if (liveVisual) {
+      try {
+        await liveVisual.delete();
+        console.log('Cleaned up live visual');
+      } catch (error) {
+        console.error('Error cleaning up visual:', error);
+      }
+    }
+  };
+
   const resetForm = () => {
     setVisualType("");
     setDataFields({});
@@ -176,12 +384,14 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
     setShowXAxis(true);
     setShowYAxis(true);
     setIsCreating(false);
+    setLiveVisual(null);
+    prevDataFieldsRef.current = {};
   };
 
   const handleVisualTypeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
     const value = event.target.value || "";
     setVisualType(value);
-    setDataFields({}); // Reset data fields when visual type changes
+    // Data fields will be reset in the useEffect that creates the visual
   };
 
   const handleDataFieldChange = (dataRole: string, value: string) => {
@@ -192,11 +402,8 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
   };
 
   const canCreateVisual = (): boolean => {
-    if (!visualType || !page) return false;
-    
-    // At least two data fields should be selected for most visuals
-    const filledFields = Object.values(dataFields).filter(f => f).length;
-    return filledFields >= 2;
+    // Visual is already created live, so we just need to check if it exists
+    return !!liveVisual;
   };
 
   // Convert property name to selector format required by Power BI API
@@ -207,129 +414,36 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
     };
   };
 
-  const createVisual = async () => {
-    if (!page || !visualType) return;
-
-    setIsCreating(true);
-
-    try {
-      // Define visual layout
-      const layout = {
-        x: 50,
-        y: 50,
-        width: 400,
-        height: 300,
-        displayState: {
-          mode: 0 // Visible
-        }
-      };
-
-      // Create the visual using the authoring API
-      // The powerbi-report-authoring import extends Page with createVisual method
-      console.log("Creating visual:", visualType);
-      const visualResponse = await (page as any).createVisual(visualType, layout);
-      const visual = visualResponse.visual;
-
-      // Add data fields
-      for (const [dataRole, fieldName] of Object.entries(dataFields)) {
-        if (fieldName) {
-          try {
-            // Look up the table and column from fieldMapping
-            const fieldInfo = fieldMapping[fieldName];
-            
-            if (!fieldInfo) {
-              console.error(`Field mapping not found for: ${fieldName}`);
-              continue;
-            }
-            
-            // Create data field target with proper typing
-            const dataField: any = {
-              [fieldInfo.isMeasure ? "measure" : "column"]: fieldInfo.column,
-              table: fieldInfo.table,
-            };
-            
-            await visual.addDataField(dataRole, dataField);
-            console.log(`Added data field: ${dataRole} = ${fieldInfo.table}[${fieldInfo.column}]`);
-          } catch (error) {
-            console.error(`Error adding data field ${dataRole}:`, error);
-          }
-        }
-      }
-
-      // Set visual properties
-      if (visualTitle) {
-        try {
-          await visual.setProperty(propertyToSelector("title"), {
-            schema: schemas.property,
-            value: true
-          });
-          await visual.setProperty(propertyToSelector("titleText"), {
-            schema: schemas.property,
-            value: visualTitle
-          });
-        } catch (error) {
-          console.error("Error setting title:", error);
-        }
-      }
-
-      // Set legend property (for visuals that support it)
-      if (["pieChart", "lineChart", "areaChart", "donutChart"].includes(visualType)) {
-        try {
-          await visual.setProperty(propertyToSelector("legend"), {
-            schema: schemas.property,
-            value: showLegend
-          });
-        } catch (error) {
-          console.error("Error setting legend:", error);
-        }
-      }
-
-      // Set axis properties (for visuals that support them)
-      if (["columnChart", "barChart", "lineChart", "areaChart"].includes(visualType)) {
-        try {
-          if (showXAxis !== undefined) {
-            await visual.setProperty(propertyToSelector("xAxis"), {
-              schema: schemas.property,
-              value: showXAxis
-            });
-          }
-          if (showYAxis !== undefined) {
-            await visual.setProperty(propertyToSelector("yAxis"), {
-              schema: schemas.property,
-              value: showYAxis
-            });
-          }
-        } catch (error) {
-          console.error("Error setting axis properties:", error);
-        }
-      }
-
-      console.log("Visual created successfully!");
-      
-      // Call callback if provided
-      if (onVisualCreated) {
-        onVisualCreated();
-      }
-
-      // Close modal
-      handleClose();
-    } catch (error) {
-      console.error("Error creating visual:", error);
-      alert("Failed to create visual. Please check the console for details. Make sure you have the powerbi-report-authoring library loaded and proper permissions.");
-    } finally {
-      setIsCreating(false);
+  // "Keep Visual" - just close modal without deleting the visual
+  const keepVisual = async () => {
+    console.log("Keeping visual on page");
+    
+    // Call callback if provided
+    if (onVisualCreated) {
+      onVisualCreated();
     }
+
+    // Clear the live visual ref so it doesn't get deleted
+    setLiveVisual(null);
+    
+    // Close modal
+    resetForm();
+    onClose();
   };
 
-  const handleClose = () => {
-    if (!isCreating) {
+  // "Cancel" - delete the visual and close
+  const handleClose = async () => {
+    if (!isCreating && !isCreatingRef.current) {
+      await cleanupVisual();
       resetForm();
       onClose();
     }
   };
 
-  const handleBack = () => {
-    if (!isCreating) {
+  // "Back" - delete the visual and go back
+  const handleBack = async () => {
+    if (!isCreating && !isCreatingRef.current) {
+      await cleanupVisual();
       resetForm();
       onBack();
     }
@@ -343,12 +457,12 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
       {/* Visual Type Selection */}
       <div className="modal-section">
         <h3>Step 1: Choose Visual Type</h3>
-        <p className="section-description">Select the type of visual you want to create</p>
+        <p className="section-description">Select a visual type - it will appear on the report immediately</p>
         <select 
           value={visualType} 
           onChange={handleVisualTypeChange}
           className="visual-type-select"
-          disabled={isCreating || !page}
+          disabled={!page}
         >
           <option value="">Select a visual type...</option>
           {visualTypes.map(vt => (
@@ -362,8 +476,8 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
       {/* Data Fields Section */}
       {visualType && (
         <div className="modal-section">
-          <h3>Step 2: Set Data Fields</h3>
-          <p className="section-description">Map your data fields to the visual's data roles</p>
+          <h3>Step 2: Add Data Fields</h3>
+          <p className="section-description">Select fields - changes update the visual live</p>
           <div className="data-fields-grid">
             {dataRoles.map(role => (
               <div key={role} className="field-row">
@@ -391,7 +505,7 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
       {visualType && (
         <div className="modal-section">
           <h3>Step 3: Format Visual</h3>
-          <p className="section-description">Customize the appearance of your visual</p>
+          <p className="section-description">Adjust formatting - updates apply instantly</p>
           
           <div className="field-row">
             <label className="field-label">Visual Title (optional)</label>
@@ -450,17 +564,19 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
         </div>
       )}
 
-      {/* Preview Section */}
-      {visualType && Object.values(dataFields).filter(f => f).length >= 2 && (
+      {/* Status Section */}
+      {liveVisual && (
         <div className="modal-section preview-section">
-          <h3>Preview</h3>
+          <h3>✅ Visual Active</h3>
           <div className="visual-preview-card">
             <div className="preview-icon">📊</div>
             <div className="preview-details">
               <strong>{visualTypes.find(v => v.name === visualType)?.displayName || visualType}</strong>
               {visualTitle && <p>Title: {visualTitle}</p>}
-              <p>Data Fields: {Object.entries(dataFields).filter(([_, v]) => v).map(([role, field]) => `${role}: ${field}`).join(', ')}</p>
-              <p className="preview-note">Click "Create Visual" to add this visual to your report</p>
+              {Object.values(dataFields).filter(f => f).length > 0 && (
+                <p>Data Fields: {Object.entries(dataFields).filter(([_, v]) => v).map(([role, field]) => `${role}: ${field}`).join(', ')}</p>
+              )}
+              <p className="preview-note">Your visual is live on the report. Click "Keep Visual" to save it.</p>
             </div>
           </div>
         </div>
@@ -546,15 +662,15 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
         </div>
 
         <div className="modal-footer">
-          <button className="btn-cancel" onClick={handleClose} disabled={isCreating}>
-            Cancel
+          <button className="btn-cancel" onClick={handleClose}>
+            {liveVisual ? 'Cancel & Delete Visual' : 'Cancel'}
           </button>
           <button 
             className="btn-create" 
-            onClick={createVisual}
-            disabled={!canCreateVisual() || isCreating}
+            onClick={keepVisual}
+            disabled={!liveVisual}
           >
-            {isCreating ? "Creating..." : "Create Visual"}
+            ✓ Keep Visual
           </button>
         </div>
       </div>
