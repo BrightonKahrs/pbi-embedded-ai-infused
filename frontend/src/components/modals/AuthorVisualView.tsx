@@ -1,391 +1,560 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { models, service, factories } from 'powerbi-client';
+import { Page, Report } from 'powerbi-client';
+import { PowerBIEmbed } from 'powerbi-client-react';
+import { models } from 'powerbi-client';
+import 'powerbi-report-authoring'; // This extends Page with createVisual method
 import { apiService } from '../../services/api';
 
-interface VisualType {
-  name: string;
-  displayName: string;
-  dataRoles: string[];
-  icon: string;
-}
+// Note: The createVisual API requires:
+// 1. powerbi-report-authoring library to be loaded (imported above)
+// 2. Report must be embedded in EDIT mode with proper permissions
+// 3. The Page object must come from an edit-mode embedded report
+// 4. The report iframe must be VISIBLE (not hidden) for createVisual to work
+
+// Define available visual types with their data roles
+const visualTypes = [
+  { name: "columnChart", displayName: "Column Chart", dataRoles: ["Category", "Y", "Tooltips"] },
+  { name: "barChart", displayName: "Bar Chart", dataRoles: ["Category", "Y", "Tooltips"] },
+  { name: "pieChart", displayName: "Pie Chart", dataRoles: ["Category", "Y", "Tooltips"] },
+  { name: "lineChart", displayName: "Line Chart", dataRoles: ["Category", "Series", "Y"] },
+  { name: "areaChart", displayName: "Area Chart", dataRoles: ["Category", "Series", "Y"] },
+  { name: "donutChart", displayName: "Donut Chart", dataRoles: ["Category", "Y", "Tooltips"] },
+];
+
+// Schema constants for Power BI API
+const schemas = {
+  column: "http://powerbi.com/product/schema#column",
+  measure: "http://powerbi.com/product/schema#measure",
+  property: "http://powerbi.com/product/schema#property",
+};
+
+// Field mapping - maps display names to table and column information
+// TODO: Update this with your actual Power BI data model table and column names
+const fieldMapping: { [key: string]: { table: string; column: string; isMeasure?: boolean } } = {
+  "Category": { table: "Category", column: "Category" },
+  "Order Count": { table: "Mesures", column: "Count order", isMeasure: true }
+};
 
 interface AuthorVisualViewProps {
   onClose: () => void;
   onBack: () => void;
+  page?: Page | null;
+  onVisualCreated?: () => void;
 }
 
-const VISUAL_TYPES: VisualType[] = [
-  { name: 'columnChart', displayName: 'Column Chart', dataRoles: ['Category', 'Values'], icon: '📊' },
-  { name: 'barChart', displayName: 'Bar Chart', dataRoles: ['Category', 'Values'], icon: '📈' },
-  { name: 'lineChart', displayName: 'Line Chart', dataRoles: ['Category', 'Values'], icon: '📉' },
-  { name: 'pieChart', displayName: 'Pie Chart', dataRoles: ['Category', 'Values'], icon: '🥧' },
-  { name: 'card', displayName: 'Card', dataRoles: ['Values'], icon: '🃏' },
-  { name: 'table', displayName: 'Table', dataRoles: ['Values'], icon: '📋' },
-  { name: 'map', displayName: 'Map', dataRoles: ['Location', 'Values'], icon: '🗺️' },
-];
-
-const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({ onClose, onBack }) => {
-  const [selectedVisualType, setSelectedVisualType] = useState<VisualType | null>(null);
+const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
+  onClose,
+  onBack,
+  page: externalPage,
+  onVisualCreated,
+}) => {
+  const [visualType, setVisualType] = useState<string>("");
   const [dataFields, setDataFields] = useState<{ [key: string]: string }>({});
-  const [visualProperties, setVisualProperties] = useState({
-    title: true,
-    legend: true,
-    xAxis: true,
-    yAxis: true,
-  });
-  const [visualTitle, setVisualTitle] = useState<string>('');
-  const [titleAlignment, setTitleAlignment] = useState<'left' | 'center' | 'right'>('left');
-  
-  // Power BI authoring state
-  const [report, setReport] = useState<any>(null);
-  const [page, setPage] = useState<any>(null);
-  const [isLoadingReport, setIsLoadingReport] = useState<boolean>(true);
-  const previewContainerRef = useRef<HTMLDivElement>(null);
+  const [availableFields, setAvailableFields] = useState<string[]>([]);
+  const [visualTitle, setVisualTitle] = useState<string>("");
 
-  // Initialize Power BI report for visual authoring
+  // Internal report state for when no external page is provided
+  const [internalPage, setInternalPage] = useState<Page | null>(null);
+  const [embedConfig, setEmbedConfig] = useState<any>(null);
+  const [isLoadingReport, setIsLoadingReport] = useState<boolean>(false);
+  const embeddedReportRef = useRef<Report | null>(null);
+
+  // Use external page if provided, otherwise use internal page
+  const page = externalPage || internalPage;
+  const needsEmbeddedReport = !externalPage;
+
+  // Load embed config when we need to embed our own report
   useEffect(() => {
-    initializeAuthoringReport();
-    return () => {
-      if (report) {
+    const loadEmbedConfig = async () => {
+      if (needsEmbeddedReport && !embedConfig) {
+        setIsLoadingReport(true);
         try {
-          report.off('loaded');
-          report.off('error');
-        } catch (err) {
-          console.error('Error cleaning up report:', err);
+          const config = await apiService.getPowerBIConfig();
+          // Modify config for edit mode
+          const editConfig = {
+            type: 'report',
+            embedUrl: config.embedUrl,
+            accessToken: config.accessToken,
+            tokenType: models.TokenType.Embed,
+            settings: {
+              panes: {
+                filters: { visible: false },
+                pageNavigation: { visible: false }
+              },
+              background: models.BackgroundType.Transparent,
+            },
+            viewMode: models.ViewMode.Edit,
+            permissions: models.Permissions.All,
+          };
+          setEmbedConfig(editConfig);
+        } catch (error) {
+          console.error('Error loading embed config for visual authoring:', error);
+        } finally {
+          setIsLoadingReport(false);
         }
       }
     };
-  }, []);
+    loadEmbedConfig();
+  }, [needsEmbeddedReport, embedConfig]);
 
-  const initializeAuthoringReport = async () => {
+  // Store embedded report reference (called immediately when component mounts)
+  const handleEmbeddedComponent = (report: Report) => {
+    console.log('AuthorVisualView: Got embedded report reference');
+    embeddedReportRef.current = report;
+  };
+
+  // Handle when report is fully rendered - now safe to get pages
+  const handleReportRendered = async () => {
+    console.log('AuthorVisualView: Report rendered, getting pages...');
+    const report = embeddedReportRef.current;
+    if (!report) {
+      console.error('No report reference available');
+      return;
+    }
+    
+    // Get the active page
     try {
-      setIsLoadingReport(true);
-      const config = await apiService.getPowerBIConfig();
-      
-      if (!previewContainerRef.current) return;
-
-      const powerbi = new service.Service(
-        factories.hpmFactory,
-        factories.wpmpFactory,
-        factories.routerFactory
-      );
-
-      const embedConfig: models.IReportEmbedConfiguration = {
-        type: 'report',
-        embedUrl: config.embedUrl,
-        accessToken: config.accessToken,
-        tokenType: models.TokenType.Embed,
-        permissions: models.Permissions.All,
-        viewMode: models.ViewMode.Edit,
-        settings: {
-          panes: {
-            filters: { visible: false, expanded: false },
-            pageNavigation: { visible: false },
-            visualizations: { visible: false, expanded: false },
-            fields: { visible: false, expanded: false },
-            bookmarks: { visible: false },
-            syncSlicers: { visible: false },
-            selection: { visible: false }
-          },
-          bars: {
-            actionBar: { visible: false },
-            statusBar: { visible: false }
-          },
-          background: models.BackgroundType.Transparent,
-          layoutType: models.LayoutType.Custom,
-          visualSettings: {
-            visualHeaders: [
-              {
-                settings: {
-                  visible: false
-                }
-              }
-            ]
-          }
-        },
-      };
-
-      const embeddedReport = powerbi.embed(previewContainerRef.current, embedConfig) as any;
-      
-      embeddedReport.on('loaded', async () => {
-        console.log('Authoring report loaded');
-        
-        // Force update settings to hide all panes after load
-        await embeddedReport.updateSettings({
-          panes: {
-            filters: { visible: false, expanded: false },
-            pageNavigation: { visible: false },
-            visualizations: { visible: false, expanded: false },
-            fields: { visible: false, expanded: false },
-            bookmarks: { visible: false },
-            syncSlicers: { visible: false },
-            selection: { visible: false }
-          },
-          bars: {
-            actionBar: { visible: false },
-            statusBar: { visible: false }
-          }
-        });
-        
-        const pages = await embeddedReport.getPages();
-        if (pages && pages.length > 0) {
-          let targetPage = pages.find((p: any) => p.displayName === 'visualCreation');
-          if (!targetPage) {
-            targetPage = pages[0];
-          }
-          await targetPage.setActive();
-          setReport(embeddedReport);
-          setPage(targetPage);
-          setIsLoadingReport(false);
-        }
-      });
-
-      embeddedReport.on('error', (event: any) => {
-        console.error('Report error:', event.detail);
-        setIsLoadingReport(false);
-      });
-
+      const pages = await report.getPages();
+      const activePage = pages.find(p => p.isActive) || pages[0];
+      if (activePage) {
+        console.log('AuthorVisualView: Got active page:', activePage.displayName);
+        setInternalPage(activePage);
+      }
     } catch (error) {
-      console.error('Failed to initialize authoring report:', error);
-      setIsLoadingReport(false);
+      console.error('Error getting active page:', error);
     }
   };
 
-  const handleAuthorVisual = () => {
-    // TODO: Implement visual creation logic
-    console.log('Creating visual:', {
-      type: selectedVisualType,
-      dataFields,
-      properties: visualProperties,
-      title: visualTitle,
-      titleAlignment,
-    });
-    onClose();
+  // Debug: Log when page prop changes
+  useEffect(() => {
+    console.log('AuthorVisualView: page changed:', page ? 'Page available' : 'Page is null');
+  }, [page]);
+  const [showLegend, setShowLegend] = useState<boolean>(true);
+  const [showXAxis, setShowXAxis] = useState<boolean>(true);
+  const [showYAxis, setShowYAxis] = useState<boolean>(true);
+  const [isCreating, setIsCreating] = useState<boolean>(false);
+
+  // Get available data roles for selected visual type
+  const getDataRoles = (): string[] => {
+    if (!visualType) return [];
+    const visual = visualTypes.find(v => v.name === visualType);
+    return visual ? visual.dataRoles : [];
   };
 
-  const isAuthorDisabled = !selectedVisualType || Object.keys(dataFields).length === 0;
+  // Load available fields on mount
+  useEffect(() => {
+    loadAvailableFields();
+  }, [page]);
+
+  // Load available fields from the report
+  const loadAvailableFields = async () => {
+    if (!page) {
+      // Use fallback fields from fieldMapping
+      setAvailableFields(Object.keys(fieldMapping));
+      return;
+    }
+    
+    try {
+      // Get visuals from page to extract available fields
+      await page.getVisuals();
+      
+      // Load field names from the fieldMapping object
+      const availableFieldNames = Object.keys(fieldMapping);
+      setAvailableFields(availableFieldNames);
+    } catch (error) {
+      console.error("Error loading fields:", error);
+      // Use fallback fields from fieldMapping
+      setAvailableFields(Object.keys(fieldMapping));
+    }
+  };
+
+  const resetForm = () => {
+    setVisualType("");
+    setDataFields({});
+    setVisualTitle("");
+    setShowLegend(true);
+    setShowXAxis(true);
+    setShowYAxis(true);
+    setIsCreating(false);
+  };
+
+  const handleVisualTypeChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = event.target.value || "";
+    setVisualType(value);
+    setDataFields({}); // Reset data fields when visual type changes
+  };
+
+  const handleDataFieldChange = (dataRole: string, value: string) => {
+    setDataFields(prev => ({
+      ...prev,
+      [dataRole]: value
+    }));
+  };
+
+  const canCreateVisual = (): boolean => {
+    if (!visualType || !page) return false;
+    
+    // At least two data fields should be selected for most visuals
+    const filledFields = Object.values(dataFields).filter(f => f).length;
+    return filledFields >= 2;
+  };
+
+  // Convert property name to selector format required by Power BI API
+  const propertyToSelector = (propertyName: string): any => {
+    return {
+      objectName: propertyName === "titleText" || propertyName === "title" ? "title" : propertyName,
+      propertyName: propertyName === "titleText" ? "text" : propertyName
+    };
+  };
+
+  const createVisual = async () => {
+    if (!page || !visualType) return;
+
+    setIsCreating(true);
+
+    try {
+      // Define visual layout
+      const layout = {
+        x: 50,
+        y: 50,
+        width: 400,
+        height: 300,
+        displayState: {
+          mode: 0 // Visible
+        }
+      };
+
+      // Create the visual using the authoring API
+      // The powerbi-report-authoring import extends Page with createVisual method
+      console.log("Creating visual:", visualType);
+      const visualResponse = await (page as any).createVisual(visualType, layout);
+      const visual = visualResponse.visual;
+
+      // Add data fields
+      for (const [dataRole, fieldName] of Object.entries(dataFields)) {
+        if (fieldName) {
+          try {
+            // Look up the table and column from fieldMapping
+            const fieldInfo = fieldMapping[fieldName];
+            
+            if (!fieldInfo) {
+              console.error(`Field mapping not found for: ${fieldName}`);
+              continue;
+            }
+            
+            // Create data field target with proper typing
+            const dataField: any = {
+              [fieldInfo.isMeasure ? "measure" : "column"]: fieldInfo.column,
+              table: fieldInfo.table,
+            };
+            
+            await visual.addDataField(dataRole, dataField);
+            console.log(`Added data field: ${dataRole} = ${fieldInfo.table}[${fieldInfo.column}]`);
+          } catch (error) {
+            console.error(`Error adding data field ${dataRole}:`, error);
+          }
+        }
+      }
+
+      // Set visual properties
+      if (visualTitle) {
+        try {
+          await visual.setProperty(propertyToSelector("title"), {
+            schema: schemas.property,
+            value: true
+          });
+          await visual.setProperty(propertyToSelector("titleText"), {
+            schema: schemas.property,
+            value: visualTitle
+          });
+        } catch (error) {
+          console.error("Error setting title:", error);
+        }
+      }
+
+      // Set legend property (for visuals that support it)
+      if (["pieChart", "lineChart", "areaChart", "donutChart"].includes(visualType)) {
+        try {
+          await visual.setProperty(propertyToSelector("legend"), {
+            schema: schemas.property,
+            value: showLegend
+          });
+        } catch (error) {
+          console.error("Error setting legend:", error);
+        }
+      }
+
+      // Set axis properties (for visuals that support them)
+      if (["columnChart", "barChart", "lineChart", "areaChart"].includes(visualType)) {
+        try {
+          if (showXAxis !== undefined) {
+            await visual.setProperty(propertyToSelector("xAxis"), {
+              schema: schemas.property,
+              value: showXAxis
+            });
+          }
+          if (showYAxis !== undefined) {
+            await visual.setProperty(propertyToSelector("yAxis"), {
+              schema: schemas.property,
+              value: showYAxis
+            });
+          }
+        } catch (error) {
+          console.error("Error setting axis properties:", error);
+        }
+      }
+
+      console.log("Visual created successfully!");
+      
+      // Call callback if provided
+      if (onVisualCreated) {
+        onVisualCreated();
+      }
+
+      // Close modal
+      handleClose();
+    } catch (error) {
+      console.error("Error creating visual:", error);
+      alert("Failed to create visual. Please check the console for details. Make sure you have the powerbi-report-authoring library loaded and proper permissions.");
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  const handleClose = () => {
+    if (!isCreating) {
+      resetForm();
+      onClose();
+    }
+  };
+
+  const handleBack = () => {
+    if (!isCreating) {
+      resetForm();
+      onBack();
+    }
+  };
+
+  const dataRoles = getDataRoles();
+
+  // Render the authoring controls
+  const renderAuthoringControls = () => (
+    <div className="authoring-controls">
+      {/* Visual Type Selection */}
+      <div className="modal-section">
+        <h3>Step 1: Choose Visual Type</h3>
+        <p className="section-description">Select the type of visual you want to create</p>
+        <select 
+          value={visualType} 
+          onChange={handleVisualTypeChange}
+          className="visual-type-select"
+          disabled={isCreating || !page}
+        >
+          <option value="">Select a visual type...</option>
+          {visualTypes.map(vt => (
+            <option key={vt.name} value={vt.name}>
+              {vt.displayName}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Data Fields Section */}
+      {visualType && (
+        <div className="modal-section">
+          <h3>Step 2: Set Data Fields</h3>
+          <p className="section-description">Map your data fields to the visual's data roles</p>
+          <div className="data-fields-grid">
+            {dataRoles.map(role => (
+              <div key={role} className="field-row">
+                <label className="field-label">{role}</label>
+                <select
+                  value={dataFields[role] || ""}
+                  onChange={(e) => handleDataFieldChange(role, e.target.value)}
+                  className="field-select"
+                  disabled={isCreating}
+                >
+                  <option value="">Select a field...</option>
+                  {availableFields.map(field => (
+                    <option key={field} value={field}>
+                      {field}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Format Visual Section */}
+      {visualType && (
+        <div className="modal-section">
+          <h3>Step 3: Format Visual</h3>
+          <p className="section-description">Customize the appearance of your visual</p>
+          
+          <div className="field-row">
+            <label className="field-label">Visual Title (optional)</label>
+            <input
+              type="text"
+              value={visualTitle}
+              onChange={(e) => setVisualTitle(e.target.value)}
+              placeholder="Enter visual title"
+              className="visual-id-input"
+              disabled={isCreating}
+            />
+          </div>
+
+          <div className="checkbox-group">
+            {["pieChart", "lineChart", "areaChart", "donutChart"].includes(visualType) && (
+              <div className="checkbox-row">
+                <label>
+                  <input 
+                    type="checkbox"
+                    checked={showLegend}
+                    onChange={(e) => setShowLegend(e.target.checked)}
+                    disabled={isCreating}
+                  />
+                  {' '}Show Legend
+                </label>
+              </div>
+            )}
+
+            {["columnChart", "barChart", "lineChart", "areaChart"].includes(visualType) && (
+              <>
+                <div className="checkbox-row">
+                  <label>
+                    <input 
+                      type="checkbox"
+                      checked={showXAxis}
+                      onChange={(e) => setShowXAxis(e.target.checked)}
+                      disabled={isCreating}
+                    />
+                    {' '}Show X Axis
+                  </label>
+                </div>
+                <div className="checkbox-row">
+                  <label>
+                    <input 
+                      type="checkbox"
+                      checked={showYAxis}
+                      onChange={(e) => setShowYAxis(e.target.checked)}
+                      disabled={isCreating}
+                    />
+                    {' '}Show Y Axis
+                  </label>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Preview Section */}
+      {visualType && Object.values(dataFields).filter(f => f).length >= 2 && (
+        <div className="modal-section preview-section">
+          <h3>Preview</h3>
+          <div className="visual-preview-card">
+            <div className="preview-icon">📊</div>
+            <div className="preview-details">
+              <strong>{visualTypes.find(v => v.name === visualType)?.displayName || visualType}</strong>
+              {visualTitle && <p>Title: {visualTitle}</p>}
+              <p>Data Fields: {Object.entries(dataFields).filter(([_, v]) => v).map(([role, field]) => `${role}: ${field}`).join(', ')}</p>
+              <p className="preview-note">Click "Create Visual" to add this visual to your report</p>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-container modal-container-large" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-overlay" onClick={handleClose}>
+      <div className={`modal-container ${needsEmbeddedReport ? 'modal-container-split' : 'modal-container-large'}`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <button 
             className="back-button" 
-            onClick={onBack}
+            onClick={handleBack}
+            disabled={isCreating}
             aria-label="Back to options"
           >
             ← Back
           </button>
           <h2>Author Visual</h2>
-          <button className="close-button" onClick={onClose} aria-label="Close">
+          <button 
+            className="close-button" 
+            onClick={handleClose} 
+            disabled={isCreating}
+            aria-label="Close"
+          >
             ✕
           </button>
         </div>
 
-        <div className="modal-body author-body">
-          <div className="author-controls">
-            {/* Visual Type Selection */}
-            <div className="modal-section">
-              <h3>Choose the visual type</h3>
-              <div className="visual-type-grid">
-                {VISUAL_TYPES.map((visualType) => (
-                  <button
-                    key={visualType.name}
-                    className={`visual-type-card ${selectedVisualType?.name === visualType.name ? 'selected' : ''}`}
-                    onClick={() => {
-                      setSelectedVisualType(visualType);
-                      setDataFields({});
-                    }}
-                  >
-                    <div className="visual-type-icon">{visualType.icon}</div>
-                    <div className="visual-type-name">{visualType.displayName}</div>
-                  </button>
-                ))}
+        <div className={`modal-body ${needsEmbeddedReport ? 'modal-body-split' : ''}`}>
+          {/* If we need embedded report, show split layout */}
+          {needsEmbeddedReport && (
+            <div className="embedded-report-pane">
+              <div className="report-pane-header">
+                <span>📊 Live Report Preview</span>
+                {isLoadingReport && <span className="loading-indicator">Loading...</span>}
               </div>
-            </div>
-
-            {/* Data Fields Section */}
-            {selectedVisualType && (
-              <div className="modal-section">
-                <h3>Set your fields</h3>
-                <div className="data-fields-wrapper">
-                  {selectedVisualType.dataRoles.map((role) => (
-                    <div key={role} className="field-row">
-                      <label htmlFor={`field-${role}`} className="field-label">
-                        {role}:
-                      </label>
-                      <select
-                        id={`field-${role}`}
-                        className="field-select"
-                        value={dataFields[role] || ''}
-                        onChange={(e) => setDataFields({ ...dataFields, [role]: e.target.value })}
-                      >
-                        <option value="">Select {role}</option>
-                        <option value="Sales">Sales</option>
-                        <option value="Revenue">Revenue</option>
-                        <option value="Quantity">Quantity</option>
-                        <option value="Product">Product</option>
-                        <option value="Category">Category</option>
-                        <option value="Date">Date</option>
-                        <option value="Region">Region</option>
-                      </select>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Properties Section */}
-            {selectedVisualType && Object.keys(dataFields).length > 0 && (
-              <div className="modal-section">
-                <h3>Format your visual</h3>
-                <div className="properties-wrapper">
-                  {/* Title Toggle */}
-                  <div className="property-row">
-                    <span className="property-label">Title</span>
-                    <label className="toggle-switch">
-                      <input
-                        type="checkbox"
-                        checked={visualProperties.title}
-                        onChange={(e) => setVisualProperties({ ...visualProperties, title: e.target.checked })}
-                      />
-                      <span className="toggle-slider"></span>
-                    </label>
+              <div className="embedded-report-container">
+                {embedConfig ? (
+                  <PowerBIEmbed
+                    embedConfig={embedConfig}
+                    eventHandlers={new Map([
+                      ['loaded', () => console.log('Report loaded in AuthorVisualView')],
+                      ['rendered', handleReportRendered],
+                      ['error', (event: any) => console.error('Report error:', event?.detail)]
+                    ])}
+                    cssClassName="author-visual-report"
+                    getEmbeddedComponent={(embeddedReport) => handleEmbeddedComponent(embeddedReport as Report)}
+                  />
+                ) : (
+                  <div className="report-loading-placeholder">
+                    <div className="spinner"></div>
+                    <p>Loading report for visual authoring...</p>
                   </div>
+                )}
+              </div>
+              <p className="report-hint">New visuals will be created on this page</p>
+            </div>
+          )}
 
-                  {/* Title Text Input */}
-                  {visualProperties.title && (
-                    <div className="property-row property-indent">
-                      <input
-                        type="text"
-                        className="title-input"
-                        placeholder="Enter visual title"
-                        value={visualTitle}
-                        onChange={(e) => setVisualTitle(e.target.value)}
-                      />
-                    </div>
-                  )}
-
-                  {/* Title Alignment */}
-                  {visualProperties.title && (
-                    <div className="property-row property-indent">
-                      <span className="property-label-small">Title alignment</span>
-                      <div className="alignment-buttons">
-                        <button
-                          className={`align-btn ${titleAlignment === 'left' ? 'selected' : ''}`}
-                          onClick={() => setTitleAlignment('left')}
-                          aria-label="Align left"
-                        >
-                          ⬅️
-                        </button>
-                        <button
-                          className={`align-btn ${titleAlignment === 'center' ? 'selected' : ''}`}
-                          onClick={() => setTitleAlignment('center')}
-                          aria-label="Align center"
-                        >
-                          ↔️
-                        </button>
-                        <button
-                          className={`align-btn ${titleAlignment === 'right' ? 'selected' : ''}`}
-                          onClick={() => setTitleAlignment('right')}
-                          aria-label="Align right"
-                        >
-                          ➡️
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Legend Toggle */}
-                  {selectedVisualType.name !== 'card' && selectedVisualType.name !== 'table' && (
-                    <div className="property-row">
-                      <span className="property-label">Legend</span>
-                      <label className="toggle-switch">
-                        <input
-                          type="checkbox"
-                          checked={visualProperties.legend}
-                          onChange={(e) => setVisualProperties({ ...visualProperties, legend: e.target.checked })}
-                        />
-                        <span className="toggle-slider"></span>
-                      </label>
-                    </div>
-                  )}
-
-                  {/* X Axis Toggle */}
-                  {(selectedVisualType.name === 'columnChart' || 
-                    selectedVisualType.name === 'barChart' || 
-                    selectedVisualType.name === 'lineChart') && (
-                    <div className="property-row">
-                      <span className="property-label">Category Axis</span>
-                      <label className="toggle-switch">
-                        <input
-                          type="checkbox"
-                          checked={visualProperties.xAxis}
-                          onChange={(e) => setVisualProperties({ ...visualProperties, xAxis: e.target.checked })}
-                        />
-                        <span className="toggle-slider"></span>
-                      </label>
-                    </div>
-                  )}
-
-                  {/* Y Axis Toggle */}
-                  {(selectedVisualType.name === 'columnChart' || 
-                    selectedVisualType.name === 'barChart' || 
-                    selectedVisualType.name === 'lineChart') && (
-                    <div className="property-row">
-                      <span className="property-label">Value Axis</span>
-                      <label className="toggle-switch">
-                        <input
-                          type="checkbox"
-                          checked={visualProperties.yAxis}
-                          onChange={(e) => setVisualProperties({ ...visualProperties, yAxis: e.target.checked })}
-                        />
-                        <span className="toggle-slider"></span>
-                      </label>
-                    </div>
-                  )}
-                </div>
+          {/* Authoring controls pane */}
+          <div className={`authoring-pane ${needsEmbeddedReport ? 'authoring-pane-side' : ''}`}>
+            {/* Loading state when waiting for page */}
+            {needsEmbeddedReport && !page && !isLoadingReport && embedConfig && (
+              <div className="waiting-banner">
+                <span className="waiting-icon">⏳</span>
+                <span>Waiting for report to load...</span>
               </div>
             )}
-          </div>
 
-          {/* Visual Preview Area */}
-          <div className="visual-preview-area">
-            <h3>Visual Preview</h3>
-            {isLoadingReport && (
-              <div className="preview-placeholder">
-                <div className="preview-icon-large">⏳</div>
-                <p>Loading authoring environment...</p>
+            {/* Show controls when page is ready OR when external page is provided */}
+            {(page || !needsEmbeddedReport) && renderAuthoringControls()}
+
+            {/* Warning if no page available and not loading */}
+            {!page && !needsEmbeddedReport && (
+              <div className="warning-banner">
+                <span className="warning-icon">⚠️</span>
+                <span>No report page available. Please embed a report first to create visuals.</span>
               </div>
             )}
-            {!isLoadingReport && !selectedVisualType && (
-              <div className="preview-placeholder">
-                <div className="preview-icon-large">✏️</div>
-                <p>Select a visual type to begin</p>
-              </div>
-            )}
-            <div 
-              ref={previewContainerRef} 
-              className="powerbi-authoring-container"
-              style={{ 
-                width: '100%', 
-                height: '500px',
-                display: selectedVisualType ? 'block' : 'none'
-              }}
-            />
           </div>
         </div>
 
         <div className="modal-footer">
-          <button className="btn-cancel" onClick={onClose}>
+          <button className="btn-cancel" onClick={handleClose} disabled={isCreating}>
             Cancel
           </button>
           <button 
             className="btn-create" 
-            onClick={handleAuthorVisual}
-            disabled={isAuthorDisabled}
+            onClick={createVisual}
+            disabled={!canCreateVisual() || isCreating}
           >
-            Create Visual
+            {isCreating ? "Creating..." : "Create Visual"}
           </button>
         </div>
       </div>

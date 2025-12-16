@@ -25,6 +25,8 @@ venv/
 ENV/
 env/
 
+React
+
 # Node
 node_modules/
 npm-debug.log*

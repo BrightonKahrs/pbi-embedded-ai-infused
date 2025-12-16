@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Page } from 'powerbi-client';
 import {
   OptionsView,
   ExistingReportView,
@@ -13,6 +14,8 @@ interface VisualCreatorModalProps {
   onCreateVisual: (visualId: string, pageName: string) => void;
   discoveredPages: any[];
   availableVisuals: any[];
+  page?: Page | null;
+  onVisualCreated?: () => void;
 }
 
 type ViewType = 'options' | 'existing' | 'author' | 'ai';
@@ -22,7 +25,9 @@ const VisualCreatorModal: React.FC<VisualCreatorModalProps> = ({
   onClose,
   onCreateVisual,
   discoveredPages,
-  availableVisuals
+  availableVisuals,
+  page,
+  onVisualCreated
 }) => {
   const [currentView, setCurrentView] = useState<ViewType>('options');
 
@@ -62,6 +67,8 @@ const VisualCreatorModal: React.FC<VisualCreatorModalProps> = ({
         <AuthorVisualView
           onClose={onClose}
           onBack={handleBack}
+          page={page}
+          onVisualCreated={onVisualCreated}
         />
       );
     
