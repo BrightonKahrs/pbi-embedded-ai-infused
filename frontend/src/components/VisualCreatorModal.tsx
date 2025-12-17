@@ -84,6 +84,9 @@ const VisualCreatorModal: React.FC<VisualCreatorModalProps> = ({
         <AuthorVisualAIView
           onClose={onClose}
           onBack={handleBack}
+          page={page}
+          onVisualCreated={onVisualCreated}
+          onCreateVisual={onCreateVisual}
         />
       );
     
