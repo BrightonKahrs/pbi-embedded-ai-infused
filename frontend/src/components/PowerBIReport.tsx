@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { PowerBIEmbed } from 'powerbi-client-react';
-import { models } from 'powerbi-client';
+import { models, Report, Page } from 'powerbi-client';
+import 'powerbi-report-authoring'; // Extends Page with createVisual and other authoring methods
 import { apiService } from '../services/api';
 import './PowerBIReport.css';
 

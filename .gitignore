@@ -25,6 +25,9 @@ venv/
 ENV/
 env/
 
+React
+quick-create-visuals
+
 # Node
 node_modules/
 npm-debug.log*
