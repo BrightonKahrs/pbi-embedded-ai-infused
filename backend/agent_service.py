@@ -7,6 +7,8 @@ import os
 import asyncio
 import logging
 from dotenv import load_dotenv
+from agent_framework.azure import AzureAIAgentClient
+from azure.identity import DefaultAzureCredential, AzureCliCredential
 
 load_dotenv()
 
@@ -55,8 +57,6 @@ Be helpful, concise, and professional in your responses."""
             # Try Azure AI Foundry first (recommended)
             if self.project_endpoint:
                 logger.info(f"Initializing Azure AI Foundry agent with endpoint: {self.project_endpoint}")
-                from agent_framework.azure import AzureAIAgentClient
-                from azure.identity import DefaultAzureCredential, AzureCliCredential
                 
                 # Try different credential types
                 credential = None

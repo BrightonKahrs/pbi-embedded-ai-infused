@@ -1,15 +1,18 @@
 """
 FastAPI Backend for Power BI Embedded with AI Agent Chat
 """
+import os
+import logging 
+from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+from typing import List, Optional
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
-import os
-import logging
-from dotenv import load_dotenv
-from agent_service import agent_service
+
 from generate_pbi_token import PowerBITokenGenerator
+from dax_agent import DaxAgent
 
 # Load environment variables
 load_dotenv()
@@ -18,10 +21,24 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Shared DaxAgent instance
+dax_agent = DaxAgent()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan - startup and shutdown."""
+    # Startup
+    await dax_agent.start()
+    await generate_powerbi_token()
+    yield
+    # Shutdown
+    await dax_agent.stop()
+
 app = FastAPI(
     title="Power BI Embedded AI Backend",
     description="Backend API for Power BI Embedded with AI Agent Chat capabilities",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Configure CORS
@@ -103,12 +120,6 @@ async def generate_powerbi_token():
         logger.warning("Power BI functionality will use environment variables if available")
         logger.info("Make sure you're logged in with 'az login' and have access to the Power BI report")
 
-# FastAPI startup event to generate Power BI token
-@app.on_event("startup")
-async def startup_event():
-    """Generate Power BI token when the app starts"""
-    await generate_powerbi_token()
-
 @app.get("/")
 async def root():
     """Health check endpoint"""
@@ -136,13 +147,9 @@ async def chat_with_agent(request: ChatRequest):
             "content": user_message.content
         })
         
-        # Convert messages to dict format for agent service
-        messages_dict = [{"role": msg.role, "content": msg.content} for msg in request.messages]
-        
-        # Get response from AI agent
-        response_content = await agent_service.chat(
-            messages=messages_dict,
-            context=request.context
+        # Get response from AI agent (using shared dax_agent instance)
+        response_content = await dax_agent.generate_dax_query(
+            user_query=user_message.content
         )
         
         conversation_history.append({
