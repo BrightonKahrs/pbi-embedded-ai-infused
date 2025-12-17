@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { models } from 'powerbi-client';
+import { models, Report, Page } from 'powerbi-client';
+import 'powerbi-report-authoring'; // Extends Page with createVisual method
 import './App.css';
 import PowerBIReport from './components/PowerBIReport';
 import VisualSelector from './components/VisualSelector';
@@ -30,9 +31,16 @@ function App() {
   const [theme, setTheme] = useState<'light' | 'dark' | 'highContrast'>('light');
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   
+  // Store discovered visuals from the report (keyed by page name)
+  const [discoveredVisualsMap, setDiscoveredVisualsMap] = useState<Map<string, any[]>>(new Map());
+  
   // Store references to embedded visuals for cross-filtering
   const visualRefsMap = useRef<Map<string, any>>(new Map());
   const [crossFilterEnabled, setCrossFilterEnabled] = useState<boolean>(true);
+  
+  // Store reference to the current report and page for visual creation
+  const [currentReport, setCurrentReport] = useState<Report | null>(null);
+  const [currentPage, setCurrentPage] = useState<Page | null>(null);
 
   // Load available pages and visuals on component mount
   useEffect(() => {
@@ -161,9 +169,102 @@ function App() {
     setEmbedType('visual');
   };
 
-  // Open modal
-  const handleOpenModal = () => {
+  // Open modal - get active page from report dynamically (like in demo)
+  const handleOpenModal = async () => {
+    // If we're on the full report tab and have a report, get the active page
+    if (embedType === 'report' && currentReport) {
+      try {
+        const pages = await currentReport.getPages();
+        const activePage = pages.find(p => p.isActive) || pages[0] || null;
+        
+        if (activePage) {
+          console.log('Got active page for visual creation:', activePage.displayName);
+          setCurrentPage(activePage);
+        } else {
+          console.warn('No active page found in report');
+          // Modal will handle embedding its own report
+        }
+      } catch (error) {
+        console.error('Error getting active page:', error);
+        // Modal will handle embedding its own report
+      }
+    } else {
+      // When on widgets tab, clear page so modal embeds its own report
+      setCurrentPage(null);
+    }
     setIsModalOpen(true);
+  };
+
+  // Handle report embedded callback - store report reference and discover visuals
+  const handleReportLoaded = async (report: Report, page: Page | null) => {
+    console.log('Report embedded in App, storing report reference');
+    setCurrentReport(report);
+    // Don't set page here - we'll get it dynamically when opening modal
+    if (page) {
+      setCurrentPage(page);
+    }
+    
+    // Discover all visuals from all pages when report loads
+    try {
+      const pages = await report.getPages();
+      console.log('Discovering visuals from', pages.length, 'pages...');
+      
+      const visualsMap = new Map<string, any[]>();
+      const pagesInfo: any[] = [];
+      
+      for (const p of pages) {
+        try {
+          const visuals = await p.getVisuals();
+          
+          // Filter and map visuals
+          const visualInfos = visuals
+            .filter(v => {
+              // Filter out certain visual types that shouldn't be pinned
+              const excludedTypes = ['slicer', 'textbox', 'shape', 'image', 'actionButton'];
+              return !excludedTypes.includes(v.type);
+            })
+            .map(v => ({
+              name: v.name,
+              type: v.type,
+              title: v.title || v.type,
+              pageName: p.name,
+              pageDisplayName: p.displayName
+            }));
+          
+          visualsMap.set(p.name, visualInfos);
+          pagesInfo.push({
+            name: p.name,
+            displayName: p.displayName,
+            isActive: p.isActive
+          });
+          
+          console.log(`Found ${visualInfos.length} visuals on page "${p.displayName}"`);
+        } catch (pageError) {
+          console.error(`Error getting visuals from page ${p.displayName}:`, pageError);
+        }
+      }
+      
+      setDiscoveredVisualsMap(visualsMap);
+      setDiscoveredPages(pagesInfo);
+      console.log('Visual discovery complete. Total pages:', pagesInfo.length);
+    } catch (error) {
+      console.error('Error discovering visuals:', error);
+    }
+  };
+
+  // Handle visual created callback to reload the report to show new visuals
+  const handleVisualCreated = async () => {
+    console.log('Visual created, reloading report to show changes...');
+    // Need to reload the report to see structure changes like new visuals
+    // refresh() only refreshes data, not structure changes
+    if (currentReport) {
+      try {
+        await currentReport.reload();
+        console.log('Report reloaded - new visuals should appear');
+      } catch (error) {
+        console.warn('Could not reload report:', error);
+      }
+    }
   };
 
   return (
@@ -196,19 +297,21 @@ function App() {
         </div>
         
         {/* Tab controls */}
-        <div className="tab-controls" style={{ marginTop: '20px' }}>
-          <button 
-            className={`tab ${embedType === 'report' ? 'active' : ''}`}
-            onClick={() => setEmbedType('report')}
-          >
-            Full report
-          </button>
-          <button 
-            className={`tab ${embedType === 'visual' ? 'active' : ''}`}
-            onClick={() => setEmbedType('visual')}
-          >
-            Power BI Widgets
-          </button>
+        <div className="tab-controls" style={{ marginTop: '20px', display: 'flex', alignItems: 'center', gap: '20px' }}>
+          <div style={{ display: 'flex', gap: '0' }}>
+            <button 
+              className={`tab ${embedType === 'report' ? 'active' : ''}`}
+              onClick={() => setEmbedType('report')}
+            >
+              Full report
+            </button>
+            <button 
+              className={`tab ${embedType === 'visual' ? 'active' : ''}`}
+              onClick={() => setEmbedType('visual')}
+            >
+              Power BI Widgets
+            </button>
+          </div>
         </div>
 
         {/* Visual selection controls - shown when Power BI Widgets tab is active */}
@@ -271,14 +374,17 @@ function App() {
                   <div className="placeholder-content">
                     <div className="plus-icon">+</div>
                     <div className="placeholder-text">Add Visual</div>
+                    <div style={{ fontSize: '11px', opacity: 0.7, marginTop: '4px' }}>Select from report</div>
                   </div>
                 </div>
               </div>
             </div>
           ) : (
-            /* Render full report */
+            /* Render full report - edit mode enabled for visual authoring */
             <PowerBIReport 
               embedType={embedType}
+              editMode={true}
+              onReportLoaded={handleReportLoaded}
             />
           )}
         </div>
@@ -294,6 +400,10 @@ function App() {
         onCreateVisual={handleCreateVisual}
         discoveredPages={discoveredPages}
         availableVisuals={availableVisuals}
+        discoveredVisualsMap={discoveredVisualsMap}
+        page={currentPage}
+        report={currentReport}
+        onVisualCreated={handleVisualCreated}
       />
     </div>
   );

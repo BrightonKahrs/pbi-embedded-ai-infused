@@ -10,11 +10,13 @@ interface PowerBIReportProps {
   visualId?: string;
   pageName?: string;
   embedType?: 'report' | 'visual';
+  editMode?: boolean; // Enable edit mode for visual authoring
   onDataSelected?: (visualId: string, event: any) => void;
   onVisualRef?: (visualId: string, visualRef: any) => void;
+  onReportLoaded?: (report: Report, page: Page | null) => void;
 }
 
-const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageName, embedType = 'report', onDataSelected, onVisualRef }) => {
+const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageName, embedType = 'report', editMode = false, onDataSelected, onVisualRef, onReportLoaded }) => {
   const [embedConfig, setEmbedConfig] = useState<models.IReportEmbedConfiguration | models.IVisualEmbedConfiguration | null>(null);
   const [error, setError] = useState<string>('');
   const [loading, setLoading] = useState(true);
@@ -57,6 +59,8 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageN
           embedUrl: config.embedUrl,
           accessToken: config.accessToken,
           tokenType: models.TokenType.Embed,
+          viewMode: editMode ? models.ViewMode.Edit : models.ViewMode.View,
+          permissions: editMode ? models.Permissions.All : models.Permissions.Read,
           settings: {
             panes: {
               filters: {
@@ -124,6 +128,28 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageN
         cssClassName="powerbi-report-frame"
         getEmbeddedComponent={(embeddedComponent) => {
           console.log('Power BI Component Embedded:', embeddedComponent);
+          
+          // For full report embedding, store the report reference
+          if (embedType === 'report' && onReportLoaded && embeddedComponent) {
+            const report = embeddedComponent as Report;
+            
+            // Call onReportLoaded immediately with the report
+            // The parent can get the page when needed using report.getPages()
+            console.log('Passing report to parent');
+            onReportLoaded(report, null);
+            
+            // Also listen for loaded event to pass the page
+            report.on('loaded', async () => {
+              try {
+                const pages = await report.getPages();
+                const activePage = pages.find(p => p.isActive) || pages[0] || null;
+                console.log('Report loaded event, active page:', activePage?.displayName);
+                onReportLoaded(report, activePage);
+              } catch (error) {
+                console.error('Error getting active page on load:', error);
+              }
+            });
+          }
           
           // Register the visual reference for cross-filtering (only for visuals)
           if (embedType === 'visual' && visualId && onVisualRef) {
