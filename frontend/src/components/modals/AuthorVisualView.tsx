@@ -59,7 +59,11 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
   const [internalPage, setInternalPage] = useState<Page | null>(null);
   const [embedConfig, setEmbedConfig] = useState<any>(null);
   const [isLoadingReport, setIsLoadingReport] = useState<boolean>(false);
+  // Use both state and ref for report - state for re-renders, ref for immediate access in callbacks
+  const [embeddedReport, setEmbeddedReport] = useState<Report | null>(null);
   const embeddedReportRef = useRef<Report | null>(null);
+  // Also use ref for internal page to avoid stale closures
+  const internalPageRef = useRef<Page | null>(null);
 
   // Use external page if provided, otherwise use internal page
   const page = externalPage || internalPage;
@@ -106,9 +110,11 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
                 ]
               }
             },
-            // Use View mode - the createVisual API works in View mode and this hides the editing toolbar
-            viewMode: models.ViewMode.View,
+            // Use Edit mode to enable report.save() functionality
+            viewMode: models.ViewMode.Edit,
             permissions: models.Permissions.All,
+            // Hide the edit mode toolbar
+            hideEditBar: true,
           };
           setEmbedConfig(editConfig);
         } catch (error) {
@@ -121,37 +127,111 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
     loadEmbedConfig();
   }, [needsEmbeddedReport, embedConfig]);
 
-  // Store embedded report reference (called immediately when component mounts)
+  // Store embedded report reference and set up event listeners
   const handleEmbeddedComponent = (report: Report) => {
-    console.log('AuthorVisualView: Got embedded report reference');
-    embeddedReportRef.current = report;
+    console.log('AuthorVisualView: Got embedded report reference', report);
+    embeddedReportRef.current = report;  // Immediate access for callbacks
+    setEmbeddedReport(report);            // For re-renders
+    
+    // Set up event listeners directly on the report object
+    report.on('loaded', async () => {
+      console.log('AuthorVisualView: report.on("loaded") fired');
+      if (!pageCreationStartedRef.current) {
+        await createNewPageForVisual(report);
+      }
+    });
+    
+    report.on('rendered', () => {
+      console.log('AuthorVisualView: report.on("rendered") fired');
+    });
+    
+    report.on('error', (event: any) => {
+      console.error('AuthorVisualView: report.on("error"):', event?.detail);
+    });
+    
+    report.on('saved', (event: any) => {
+      console.log('AuthorVisualView: report.on("saved") fired:', event?.detail);
+    });
   };
 
-  // Handle when report is fully rendered - now safe to get pages
-  const handleReportRendered = async () => {
-    console.log('AuthorVisualView: Report rendered, getting pages...');
-    const report = embeddedReportRef.current;
-    if (!report) {
-      console.error('No report reference available');
+  // Track the created page name for cleanup
+  const [createdPageName, setCreatedPageName] = useState<string | null>(null);
+  // Guard to prevent multiple page creation
+  const pageCreationStartedRef = useRef<boolean>(false);
+
+  // Create a new page for the visual - called after report is ready
+  const createNewPageForVisual = async (report: Report) => {
+    // Guard against multiple calls
+    if (pageCreationStartedRef.current) {
+      console.log('AuthorVisualView: Page creation already started, skipping...');
       return;
     }
+    pageCreationStartedRef.current = true;
     
-    // Get the active page
+    console.log('AuthorVisualView: Creating new page for visual...');
+    
+    // Create a new page for the visual
     try {
+      const newPageName = `Visual_${Date.now()}`;
+      console.log('Creating new page:', newPageName);
+      
+      const addPageResult = await report.addPage(newPageName);
+      console.log('New page created:', addPageResult);
+      setCreatedPageName(newPageName);
+      
+      // Get the newly created page and set it as our working page
       const pages = await report.getPages();
-      const activePage = pages.find(p => p.isActive) || pages[0];
-      if (activePage) {
-        console.log('AuthorVisualView: Got active page:', activePage.displayName);
-        setInternalPage(activePage);
+      console.log('All pages after creation:', pages.map(p => ({ name: p.name, displayName: p.displayName, isActive: p.isActive })));
+      
+      const newPage = pages.find(p => p.name === newPageName || p.displayName === newPageName);
+      
+      if (newPage) {
+        // Set as active page
+        await newPage.setActive();
+        console.log('AuthorVisualView: Set new page as active:', newPage.displayName, 'name:', newPage.name);
+        // Set both ref AND state
+        internalPageRef.current = newPage;
+        setInternalPage(newPage);
+      } else {
+        console.error('Could not find newly created page, pages:', pages.map(p => p.name));
+        // Fallback to active page
+        const activePage = pages.find(p => p.isActive) || pages[0];
+        if (activePage) {
+          internalPageRef.current = activePage;
+          setInternalPage(activePage);
+        }
       }
     } catch (error) {
-      console.error('Error getting active page:', error);
+      console.error('Error creating new page:', error);
+      // Fallback: use existing page
+      try {
+        const pages = await report.getPages();
+        const activePage = pages.find(p => p.isActive) || pages[0];
+        if (activePage) {
+          console.log('AuthorVisualView: Falling back to active page:', activePage.displayName);
+          internalPageRef.current = activePage;
+          setInternalPage(activePage);
+        }
+      } catch (fallbackError) {
+        console.error('Error getting fallback page:', fallbackError);
+      }
+    }
+  };
+
+  // Handle when report is fully rendered
+  const handleReportRendered = async () => {
+    console.log('AuthorVisualView: Report rendered event fired');
+    const report = embeddedReportRef.current;
+    if (report) {
+      await createNewPageForVisual(report);
+    } else {
+      console.log('AuthorVisualView: Report not ready yet in rendered event');
     }
   };
 
   // Debug: Log when page prop changes
   useEffect(() => {
-    console.log('AuthorVisualView: page changed:', page ? 'Page available' : 'Page is null');
+    console.log('AuthorVisualView: page changed:', page ? 'Page available' : 'Page is null', page?.name);
   }, [page]);
 
   // Live visual reference - stores the created visual for real-time updates
@@ -209,8 +289,14 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
 
   // CREATE VISUAL when visual type is selected
   useEffect(() => {
+    // Use ref for immediate access to the page (state might be stale)
+    const currentPage = internalPageRef.current || page;
+    
     // Skip if no page or no visual type selected
-    if (!page || !visualType) return;
+    if (!currentPage || !visualType) {
+      console.log('Skipping visual creation - page:', !!currentPage, 'visualType:', visualType);
+      return;
+    }
     
     // Skip if we already have a visual of this exact type
     if (liveVisualRef.current && currentVisualTypeRef.current === visualType) {
@@ -222,6 +308,13 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
     
     const createLiveVisual = async () => {
       const targetVisualType = visualType; // Capture for async safety
+      // Use the page from ref for consistency
+      const targetPage = internalPageRef.current || page;
+      
+      if (!targetPage) {
+        console.error('No page available for visual creation');
+        return;
+      }
       
       // Wait for any in-progress operation to finish
       while (isCreatingRef.current) {
@@ -245,7 +338,7 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
         currentVisualTypeRef.current = ""; // Clear so we don't skip
         try {
           // Use page.deleteVisual instead of visual.delete() - this is what the demo uses
-          await (page as any).deleteVisual(existingVisual.name);
+          await (targetPage as any).deleteVisual(existingVisual.name);
           console.log('Previous visual deleted successfully');
         } catch (error) {
           console.error('Error deleting previous visual:', error);
@@ -271,8 +364,8 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
           displayState: { mode: 0 }
         };
 
-        console.log('Creating live visual:', targetVisualType);
-        const visualResponse = await (page as any).createVisual(targetVisualType, layout);
+        console.log('Creating live visual on page:', targetPage.name, 'type:', targetVisualType);
+        const visualResponse = await (targetPage as any).createVisual(targetVisualType, layout);
         const visual = visualResponse.visual;
         
         // Only keep if not cancelled
@@ -352,10 +445,9 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
           }
           
           // Hide visual headers on the new visual (like the demo does)
-          const report = embeddedReportRef.current;
-          if (report) {
+          if (embeddedReport) {
             try {
-              await report.updateSettings({
+              await embeddedReport.updateSettings({
                 visualSettings: {
                   visualHeaders: [
                     {
@@ -513,9 +605,12 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
     updateAxes();
   }, [showXAxis, showYAxis, liveVisual, visualType]);
 
-  // Clean up visual when component unmounts or modal closes
+  // Clean up visual and page when component unmounts or modal closes (cancel)
   const cleanupVisual = async () => {
     const visual = liveVisualRef.current;
+    const report = embeddedReportRef.current;
+    
+    // Delete the visual if it exists
     if (visual && visual.name && page) {
       try {
         // Use page.deleteVisual like the demo does
@@ -523,6 +618,17 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
         console.log('Cleaned up live visual:', visual.name);
       } catch (error) {
         console.error('Error cleaning up visual:', error);
+      }
+    }
+    
+    // Delete the created page if we're canceling (not keeping)
+    if (createdPageName && report) {
+      try {
+        await report.deletePage(createdPageName);
+        console.log('Cleaned up created page:', createdPageName);
+        setCreatedPageName(null);
+      } catch (error) {
+        console.error('Error cleaning up page:', error);
       }
     }
   };
@@ -578,8 +684,9 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
     console.log("Keeping visual on page - saving report...");
     
     try {
-      const report = embeddedReportRef.current;
       const currentPage = page;
+      // Use ref for immediate access (more reliable than state in async callbacks)
+      const report = embeddedReportRef.current || embeddedReport;
       
       if (!report) {
         console.error('No report reference available for saving');
@@ -588,18 +695,56 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
       
       // Get the visual ID (name) before we clear the reference
       const visualId = liveVisual.name;
-      const pageName = currentPage?.name || '';
+      const pageName = currentPage?.name || createdPageName || '';
       
       console.log('Visual ID to pin:', visualId);
       console.log('Page name:', pageName);
+      console.log('Created page name:', createdPageName);
       
-      // Save the report to persist the new visual
+      // Save the report to persist the new visual and new page
       try {
-        await report.save();
+        console.log('Attempting to save report...');
+        console.log('Report object:', report);
+        console.log('Report id:', (report as any).config?.id);
+        
+        // The report should be dirty because we created a new page
+        const wasSavedBefore = await report.isSaved();
+        console.log('Report isSaved before save():', wasSavedBefore);
+        
+        // Create a promise that resolves when 'saved' event fires
+        const savePromise = new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('Save timeout - no saved event received after 30 seconds'));
+          }, 30000);
+          
+          report.on('saved', (event: any) => {
+            clearTimeout(timeout);
+            console.log('*** SAVED EVENT RECEIVED ***:', event?.detail);
+            resolve();
+          });
+        });
+        
+        // Call save()
+        console.log('Calling report.save()...');
+        const saveResult = await report.save();
+        console.log('report.save() returned:', saveResult);
+        
+        // Wait for the saved event to confirm
+        console.log('Waiting for saved event...');
+        await savePromise;
+        console.log('Save confirmed by saved event!');
+        
+        // Verify save completed
+        const isSavedAfter = await report.isSaved();
+        console.log('Report isSaved after save():', isSavedAfter);
         console.log('Report saved successfully');
-      } catch (saveError) {
+      } catch (saveError: any) {
         console.error('Error saving report:', saveError);
-        // Continue anyway - the visual might still be usable in the current session
+        console.error('Save error details:', JSON.stringify(saveError, null, 2));
+        // Don't continue if save fails - the visual won't persist
+        alert(`Failed to save report: ${saveError?.message || saveError?.detailedMessage || 'Unknown error'}`);
+        setIsSaving(false);
+        return;
       }
       
       // Call onCreateVisual to add the visual to the widgets page
@@ -616,6 +761,8 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
       // Clear the live visual ref so it doesn't get deleted on unmount
       setLiveVisual(null);
       liveVisualRef.current = null;
+      // Clear the created page name so it doesn't get deleted (we're keeping it!)
+      setCreatedPageName(null);
       
       // Close modal
       resetForm();
@@ -816,11 +963,7 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
                 {embedConfig ? (
                   <PowerBIEmbed
                     embedConfig={embedConfig}
-                    eventHandlers={new Map([
-                      ['loaded', () => console.log('Report loaded in AuthorVisualView')],
-                      ['rendered', handleReportRendered],
-                      ['error', (event: any) => console.error('Report error:', event?.detail)]
-                    ])}
+                    eventHandlers={new Map()}
                     cssClassName="author-visual-report"
                     getEmbeddedComponent={(embeddedReport) => handleEmbeddedComponent(embeddedReport as Report)}
                   />

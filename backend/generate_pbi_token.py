@@ -183,9 +183,12 @@ class PowerBITokenGenerator:
             url = f"{self.base_url}/reports/{report_id}/GenerateToken"
         
         # Request body for embed token generation
-        # For User Owns Data, we typically don't need to specify datasets or identities
+        # Per docs: https://learn.microsoft.com/en-us/javascript/api/overview/powerbi/create-edit-report-embed-view
+        # For editing/saving reports, need accessLevel=Edit AND allowEdit=true
         body = {
-            "accessLevel": "View"  # Can be "View", "Edit", or "Create"
+            "accessLevel": "Edit",  # "Edit" required for saving reports and creating visuals
+            "allowEdit": True,      # Required for editing and saving - per MS docs
+            "allowSaveAs": False    # Set to True if you want "Save As" capability
         }
         
         response = requests.post(url, headers=headers, json=body)

@@ -252,15 +252,17 @@ function App() {
     }
   };
 
-  // Handle visual created callback to refresh the page
+  // Handle visual created callback to reload the report to show new visuals
   const handleVisualCreated = async () => {
-    console.log('Visual created, refreshing...');
-    // Optionally refresh the report to show the new visual
+    console.log('Visual created, reloading report to show changes...');
+    // Need to reload the report to see structure changes like new visuals
+    // refresh() only refreshes data, not structure changes
     if (currentReport) {
       try {
-        await currentReport.refresh();
+        await currentReport.reload();
+        console.log('Report reloaded - new visuals should appear');
       } catch (error) {
-        console.warn('Could not refresh report:', error);
+        console.warn('Could not reload report:', error);
       }
     }
   };
