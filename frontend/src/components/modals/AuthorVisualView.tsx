@@ -40,6 +40,7 @@ interface AuthorVisualViewProps {
   onBack: () => void;
   page?: Page | null;
   onVisualCreated?: () => void;
+  onCreateVisual?: (visualId: string, pageName: string) => void;
 }
 
 const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
@@ -47,6 +48,7 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
   onBack,
   page: externalPage,
   onVisualCreated,
+  onCreateVisual,
 }) => {
   const [visualType, setVisualType] = useState<string>("");
   const [dataFields, setDataFields] = useState<{ [key: string]: string }>({});
@@ -563,21 +565,67 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
     };
   };
 
-  // "Keep Visual" - just close modal without deleting the visual
+  // "Keep Visual" - save report and pin visual to widgets
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+  
   const keepVisual = async () => {
-    console.log("Keeping visual on page");
-    
-    // Call callback if provided
-    if (onVisualCreated) {
-      onVisualCreated();
+    if (!liveVisual) {
+      console.error('No visual to save');
+      return;
     }
-
-    // Clear the live visual ref so it doesn't get deleted
-    setLiveVisual(null);
     
-    // Close modal
-    resetForm();
-    onClose();
+    setIsSaving(true);
+    console.log("Keeping visual on page - saving report...");
+    
+    try {
+      const report = embeddedReportRef.current;
+      const currentPage = page;
+      
+      if (!report) {
+        console.error('No report reference available for saving');
+        return;
+      }
+      
+      // Get the visual ID (name) before we clear the reference
+      const visualId = liveVisual.name;
+      const pageName = currentPage?.name || '';
+      
+      console.log('Visual ID to pin:', visualId);
+      console.log('Page name:', pageName);
+      
+      // Save the report to persist the new visual
+      try {
+        await report.save();
+        console.log('Report saved successfully');
+      } catch (saveError) {
+        console.error('Error saving report:', saveError);
+        // Continue anyway - the visual might still be usable in the current session
+      }
+      
+      // Call onCreateVisual to add the visual to the widgets page
+      if (onCreateVisual && visualId && pageName) {
+        console.log('Adding visual to widgets:', visualId, pageName);
+        onCreateVisual(visualId, pageName);
+      }
+      
+      // Call the legacy callback if provided
+      if (onVisualCreated) {
+        onVisualCreated();
+      }
+      
+      // Clear the live visual ref so it doesn't get deleted on unmount
+      setLiveVisual(null);
+      liveVisualRef.current = null;
+      
+      // Close modal
+      resetForm();
+      onClose();
+      
+    } catch (error) {
+      console.error('Error keeping visual:', error);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // "Cancel" - delete the visual and close
@@ -811,15 +859,15 @@ const AuthorVisualView: React.FC<AuthorVisualViewProps> = ({
         </div>
 
         <div className="modal-footer">
-          <button className="btn-cancel" onClick={handleClose}>
+          <button className="btn-cancel" onClick={handleClose} disabled={isSaving}>
             {liveVisual ? 'Cancel & Delete Visual' : 'Cancel'}
           </button>
           <button 
             className="btn-create" 
             onClick={keepVisual}
-            disabled={!liveVisual}
+            disabled={!liveVisual || isSaving}
           >
-            ✓ Keep Visual
+            {isSaving ? 'Saving...' : '✓ Keep Visual'}
           </button>
         </div>
       </div>

@@ -31,6 +31,9 @@ function App() {
   const [theme, setTheme] = useState<'light' | 'dark' | 'highContrast'>('light');
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   
+  // Store discovered visuals from the report (keyed by page name)
+  const [discoveredVisualsMap, setDiscoveredVisualsMap] = useState<Map<string, any[]>>(new Map());
+  
   // Store references to embedded visuals for cross-filtering
   const visualRefsMap = useRef<Map<string, any>>(new Map());
   const [crossFilterEnabled, setCrossFilterEnabled] = useState<boolean>(true);
@@ -192,13 +195,60 @@ function App() {
     setIsModalOpen(true);
   };
 
-  // Handle report embedded callback - store report reference
-  const handleReportLoaded = (report: Report, page: Page | null) => {
+  // Handle report embedded callback - store report reference and discover visuals
+  const handleReportLoaded = async (report: Report, page: Page | null) => {
     console.log('Report embedded in App, storing report reference');
     setCurrentReport(report);
     // Don't set page here - we'll get it dynamically when opening modal
     if (page) {
       setCurrentPage(page);
+    }
+    
+    // Discover all visuals from all pages when report loads
+    try {
+      const pages = await report.getPages();
+      console.log('Discovering visuals from', pages.length, 'pages...');
+      
+      const visualsMap = new Map<string, any[]>();
+      const pagesInfo: any[] = [];
+      
+      for (const p of pages) {
+        try {
+          const visuals = await p.getVisuals();
+          
+          // Filter and map visuals
+          const visualInfos = visuals
+            .filter(v => {
+              // Filter out certain visual types that shouldn't be pinned
+              const excludedTypes = ['slicer', 'textbox', 'shape', 'image', 'actionButton'];
+              return !excludedTypes.includes(v.type);
+            })
+            .map(v => ({
+              name: v.name,
+              type: v.type,
+              title: v.title || v.type,
+              pageName: p.name,
+              pageDisplayName: p.displayName
+            }));
+          
+          visualsMap.set(p.name, visualInfos);
+          pagesInfo.push({
+            name: p.name,
+            displayName: p.displayName,
+            isActive: p.isActive
+          });
+          
+          console.log(`Found ${visualInfos.length} visuals on page "${p.displayName}"`);
+        } catch (pageError) {
+          console.error(`Error getting visuals from page ${p.displayName}:`, pageError);
+        }
+      }
+      
+      setDiscoveredVisualsMap(visualsMap);
+      setDiscoveredPages(pagesInfo);
+      console.log('Visual discovery complete. Total pages:', pagesInfo.length);
+    } catch (error) {
+      console.error('Error discovering visuals:', error);
     }
   };
 
@@ -348,7 +398,9 @@ function App() {
         onCreateVisual={handleCreateVisual}
         discoveredPages={discoveredPages}
         availableVisuals={availableVisuals}
+        discoveredVisualsMap={discoveredVisualsMap}
         page={currentPage}
+        report={currentReport}
         onVisualCreated={handleVisualCreated}
       />
     </div>
