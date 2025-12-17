@@ -66,6 +66,7 @@ model_metadata = """
     • Mesures[Count Total Customers] = VAR CP = CALCULATETABLE(VALUES(Orders[Customer ID]), FILTER(ALL('Calendar'), 'Calendar'[Date] > MIN('Calendar'[Date]) - (1 * [Interval Value]))) Return COUNTROWS(CP)
     • Mesures[Lost Count Customers] = VAR CP = CALCULATETABLE(VALUES(Orders[Customer ID]), FILTER(ALL('Calendar'), 'Calendar'[Date] > MIN('Calendar'[Date]) - (1 * [Interval Value]) && 'Calendar'[Date] < MIN('Calendar'[Date])-(1 * [Churn Parameter Value]))) VAR PC = CALCULATETABLE(VALUES(Orders[Customer ID]), FILTER(ALL('Calendar'), 'Calendar'[Date] > MIN('Calendar'[Date]) - (1 * [Churn Parameter Value]) && 'Calendar'[Date] < MIN('Calendar'[Date]))) Return COUNTROWS(EXCEPT(CP,PC))
     • Mesures[Total Sales YTD] = TOTALYTD([Total Sales],'Calendar'[Date])
+    • Mesures[Total Sales] = CALCULATE(SUM(Orders[Sales]))
 
     Table: ★Orders_product
     • ★Orders_product[ProductCategory-EN] (string)
