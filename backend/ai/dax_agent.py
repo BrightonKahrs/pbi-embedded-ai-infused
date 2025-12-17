@@ -1,12 +1,14 @@
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Annotated
 import os
 import asyncio
 import logging
+import aiohttp
 from dotenv import load_dotenv
 
 from agent_framework import ChatMessage
 from agent_framework.azure import AzureAIClient
 from azure.identity.aio import DefaultAzureCredential  # Use async credential
+from pydantic import Field
 
 load_dotenv()
 
@@ -14,9 +16,15 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Azure AI Configuration
 azure_ai_project_endpoint = os.getenv("AZURE_AI_PROJECT_ENDPOINT")
 azure_ai_model_deployment_name = os.getenv("AZURE_AI_MODEL_DEPLOYMENT_NAME")
 azure_ai_api_key = os.getenv("AZURE_AI_API_KEY")
+
+# Power BI configuration
+powerbi_workspace_id = os.getenv("POWERBI_WORKSPACE_ID")
+powerbi_dataset_id = os.getenv("POWERBI_DATASET_ID")
+
 
 model_metadata = """
     Table: Category
@@ -57,6 +65,7 @@ model_metadata = """
     • Mesures[Avrg date] = AVERAGE(Orders[DateDIFF])
     • Mesures[Count Total Customers] = VAR CP = CALCULATETABLE(VALUES(Orders[Customer ID]), FILTER(ALL('Calendar'), 'Calendar'[Date] > MIN('Calendar'[Date]) - (1 * [Interval Value]))) Return COUNTROWS(CP)
     • Mesures[Lost Count Customers] = VAR CP = CALCULATETABLE(VALUES(Orders[Customer ID]), FILTER(ALL('Calendar'), 'Calendar'[Date] > MIN('Calendar'[Date]) - (1 * [Interval Value]) && 'Calendar'[Date] < MIN('Calendar'[Date])-(1 * [Churn Parameter Value]))) VAR PC = CALCULATETABLE(VALUES(Orders[Customer ID]), FILTER(ALL('Calendar'), 'Calendar'[Date] > MIN('Calendar'[Date]) - (1 * [Churn Parameter Value]) && 'Calendar'[Date] < MIN('Calendar'[Date]))) Return COUNTROWS(EXCEPT(CP,PC))
+    • Mesures[Total Sales YTD] = TOTALYTD([Total Sales],'Calendar'[Date])
 
     Table: ★Orders_product
     • ★Orders_product[ProductCategory-EN] (string)
@@ -79,6 +88,85 @@ model_metadata = """
     Orders[Product_id] → ★Orders_product[ProductID]
     Orders[Category_id] → Category[Category ID]
 """
+
+
+async def get_dax_result(dax_query: Annotated[str, Field(description="The DAX query to execute on the power bi semantic model")]) -> str:
+    """Execute a DAX query against the Power BI dataset using the Execute Queries API.
+    
+    API: POST https://api.powerbi.com/v1.0/myorg/groups/{groupId}/datasets/{datasetId}/executeQueries
+    """
+    logger.info(f"Executing DAX Query: {dax_query}")
+
+    if not powerbi_workspace_id or not powerbi_dataset_id:
+        error_msg = "POWERBI_WORKSPACE_ID and POWERBI_DATASET_ID must be set in environment variables"
+        logger.error(error_msg)
+        return f"Error: {error_msg}"
+
+    # Get access token for Power BI API
+    async with DefaultAzureCredential() as credential:
+        token = await credential.get_token("https://analysis.windows.net/powerbi/api/.default")
+        access_token = token.token
+
+    # Build the API URL
+    api_url = f"https://api.powerbi.com/v1.0/myorg/groups/{powerbi_workspace_id}/datasets/{powerbi_dataset_id}/executeQueries"
+
+    # Build the request body
+    request_body = {
+        "queries": [
+            {"query": dax_query}
+        ],
+        "serializerSettings": {
+            "includeNulls": True
+        }
+    }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(api_url, json=request_body, headers=headers) as response:
+            if response.status != 200:
+                error_text = await response.text()
+                logger.error(f"Power BI API error: {response.status} - {error_text}")
+                return f"Error executing DAX query: {error_text}"
+
+            result = await response.json()
+            
+            # Check for errors in the response
+            if result.get("error"):
+                error_msg = result["error"].get("message", "Unknown error")
+                logger.error(f"DAX execution error: {error_msg}")
+                return f"Error: {error_msg}"
+
+            # Extract the results
+            results = result.get("results", [])
+            if not results:
+                return "No results returned"
+
+            # Get the first query result
+            query_result = results[0]
+            if query_result.get("error"):
+                error_msg = query_result["error"].get("message", "Unknown error")
+                logger.error(f"DAX query error: {error_msg}")
+                return f"Error: {error_msg}"
+
+            # Extract tables and rows
+            tables = query_result.get("tables", [])
+            if not tables:
+                return "No tables returned"
+
+            rows = tables[0].get("rows", [])
+            if not rows:
+                return "No rows returned"
+
+            logger.info(f"DAX query returned {len(rows)} rows")
+            
+            # Return the results as a formatted string
+            import json
+            return json.dumps(rows, indent=2)
+
 
 class DaxAgent:
     """Agent that specializes in translating natural language to DAX queries."""
@@ -121,12 +209,15 @@ class DaxAgent:
             user_query (str): The natural language query from the user."""
         
         system_instructions = f"""
-        You are an expert DAX query generator. Given the following data model schema and the user provided query, generate the appropriate DAX query.
+        You are an expert DAX query generator. Given the following data model schema and the user provided query, answer the question using the get_dax_result tool to execute the DAX query.
 
         Data Model Schema:
         {model_metadata}
 
-        Generate only the DAX query without any additional explanation.
+        Steps to follow:
+        1. Analyze the user query and determine the appropriate DAX query needed to answer it.
+        2. Use the get_dax_result tool to execute the DAX query on the Power BI semantic model.
+        3. Return the result obtained from the get_dax_result tool as your final answer
         """
 
         if not self._client:
@@ -137,6 +228,8 @@ class DaxAgent:
             ChatMessage(role="user", text=user_query),
         ]
 
-        result = await self._client.get_response(messages)
+        agent = self._client.create_agent(id="DaxAgent", tools=[get_dax_result], messages=messages)
+
+        result = await agent.run(messages=messages)
         logger.info(f"Generated DAX Query: {result.text}")
         return result.text

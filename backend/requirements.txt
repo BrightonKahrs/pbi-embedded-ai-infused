@@ -9,3 +9,4 @@ azure-identity>=1.19.0
 azure-ai-inference==1.0.0b6
 openai==1.57.2
 requests>=2.31.0
+aiohttp>=3.9.0

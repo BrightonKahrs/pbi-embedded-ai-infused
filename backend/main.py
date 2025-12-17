@@ -11,8 +11,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from generate_pbi_token import PowerBITokenGenerator
-from dax_agent import DaxAgent
+from pbi.generate_pbi_token import PowerBITokenGenerator
+from ai.dax_agent import DaxAgent
 
 # Load environment variables
 load_dotenv()
