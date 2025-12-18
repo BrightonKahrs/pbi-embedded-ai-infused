@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from pbi.generate_pbi_token import PowerBITokenGenerator
 from ai.dax_agent import DaxAgent
+from ai.visual_creator_agent import VisualCreatorAgent, VisualConfig
 
 # Load environment variables
 load_dotenv()
@@ -21,18 +22,21 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Shared DaxAgent instance
+# Shared agent instances
 dax_agent = DaxAgent()
+visual_creator_agent = VisualCreatorAgent()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
     # Startup
     await dax_agent.start()
+    await visual_creator_agent.start()
     await generate_powerbi_token()
     yield
     # Shutdown
     await dax_agent.stop()
+    await visual_creator_agent.stop()
 
 app = FastAPI(
     title="Power BI Embedded AI Backend",
@@ -70,6 +74,14 @@ class PowerBIConfig(BaseModel):
     visualId: Optional[str] = None
     reportId: Optional[str] = None
     workspaceId: Optional[str] = None
+
+class VisualChatRequest(BaseModel):
+    message: str
+    conversationHistory: Optional[List[dict]] = None
+
+class VisualConfigResponse(BaseModel):
+    config: VisualConfig
+    message: str
 
 # In-memory conversation history (in production, use a database)
 conversation_history = []
@@ -129,11 +141,40 @@ async def root():
         "version": "1.0.0"
     }
 
+@app.post("/api/visual-chat", response_model=VisualConfigResponse)
+async def visual_chat(request: VisualChatRequest):
+    """
+    Chat endpoint for AI-powered visual creation
+    Uses VisualCreatorAgent to generate Power BI visual configurations from natural language
+    """
+    try:
+        if not request.message:
+            raise HTTPException(status_code=400, detail="No message provided")
+        
+        # Get visual config from AI agent
+        config = await visual_creator_agent.generate_visual_config(
+            user_message=request.message
+        )
+        
+        # Generate a friendly response message
+        message = f"I've created a {config.visualType} configuration"
+        if config.title:
+            message += f' titled "{config.title}"'
+        message += ". The visual will be created on your report."
+        
+        return VisualConfigResponse(config=config, message=message)
+    
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in visual chat: {e}")
+        raise HTTPException(status_code=500, detail=f"Error generating visual config: {str(e)}")
+    
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_with_agent(request: ChatRequest):
     """
     Chat endpoint for AI agent interaction
-    Uses Microsoft Agent Framework for intelligent responses
+    Uses Microsoft Agent Framework that returns Power BI visual configurations
     """
     try:
         # Add user message to history
@@ -158,7 +199,7 @@ async def chat_with_agent(request: ChatRequest):
         })
         
         return ChatResponse(message=response_content, role="assistant")
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")
 

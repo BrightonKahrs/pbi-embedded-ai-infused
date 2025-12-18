@@ -17,6 +17,27 @@ export interface ChatResponse {
   role: string;
 }
 
+export interface VisualConfig {
+  visualType: string;
+  title?: string;
+  dataFields: Array<{
+    dataRole: string;
+    table: string;
+    column: string;
+    isMeasure?: boolean;
+  }>;
+  properties?: {
+    showLegend?: boolean;
+    showXAxis?: boolean;
+    showYAxis?: boolean;
+  };
+}
+
+export interface VisualChatResponse {
+  config: VisualConfig;
+  message: string;
+}
+
 export interface PowerBIConfig {
   embedUrl: string;
   accessToken: string;
@@ -61,6 +82,21 @@ export const apiService = {
 
   async clearChatHistory(): Promise<void> {
     await apiClient.delete('/api/chat/history');
+  },
+
+  // Visual Creator AI endpoints
+  async sendVisualChatMessage(
+    message: string,
+    conversationHistory: ChatMessage[] = []
+  ): Promise<VisualChatResponse> {
+    const response = await apiClient.post<VisualChatResponse>('/api/visual-chat', {
+      message,
+      conversationHistory: conversationHistory.map(m => ({
+        role: m.role,
+        content: m.content
+      }))
+    });
+    return response.data;
   },
 
   // Power BI endpoints

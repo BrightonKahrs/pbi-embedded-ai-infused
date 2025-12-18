@@ -3,7 +3,14 @@ import { Page, Report } from 'powerbi-client';
 import { PowerBIEmbed } from 'powerbi-client-react';
 import { models } from 'powerbi-client';
 import 'powerbi-report-authoring';
-import { apiService, ChatMessage } from '../../services/api';
+import { apiService, ChatMessage, VisualConfig } from '../../services/api';
+
+// Schema constants for Power BI API
+const schemas = {
+  column: "http://powerbi.com/product/schema#column",
+  measure: "http://powerbi.com/product/schema#measure",
+  property: "http://powerbi.com/product/schema#property",
+};
 
 interface AuthorVisualAIViewProps {
   onClose: () => void;
@@ -198,11 +205,11 @@ const AuthorVisualAIView: React.FC<AuthorVisualAIViewProps> = ({
     setIsLoading(true);
 
     try {
-      // TODO: Integrate with AI visual creation service
-      // For now, send to regular chat endpoint
-      const response = await apiService.sendChatMessage({
-        messages: [...messages, userMessage]
-      });
+      // Send to visual creator AI endpoint
+      const response = await apiService.sendVisualChatMessage(
+        inputValue,
+        messages
+      );
 
       const assistantMessage: ChatMessage = {
         role: 'assistant',
@@ -210,6 +217,11 @@ const AuthorVisualAIView: React.FC<AuthorVisualAIViewProps> = ({
       };
 
       setMessages(prev => [...prev, assistantMessage]);
+
+      // Apply the visual configuration if we have a page
+      if (response.config && page) {
+        await applyVisualConfig(response.config);
+      }
     } catch (error) {
       console.error('Error sending message:', error);
       const errorMessage: ChatMessage = {
@@ -219,6 +231,113 @@ const AuthorVisualAIView: React.FC<AuthorVisualAIViewProps> = ({
       setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Apply AI-generated visual configuration to the report
+  const applyVisualConfig = async (config: VisualConfig) => {
+    const currentPage = internalPageRef.current || page;
+    if (!currentPage) {
+      console.error('No page available for visual creation');
+      return;
+    }
+
+    // Delete existing visual if any
+    if (liveVisualRef.current) {
+      try {
+        await (currentPage as any).deleteVisual(liveVisualRef.current.name);
+        console.log('Deleted previous visual');
+      } catch (e) {
+        console.error('Error deleting previous visual:', e);
+      }
+      // Small delay to ensure Power BI processes the deletion
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+
+    // Create the visual with layout to fill the page
+    const layout = {
+      x: 20,
+      y: 20,
+      width: 1240,
+      height: 680,
+      displayState: { mode: 0 }
+    };
+
+    try {
+      console.log('Creating visual with config:', config);
+      const visualResponse = await (currentPage as any).createVisual(config.visualType, layout);
+      const visual = visualResponse.visual;
+
+      setLiveVisual(visual);
+      liveVisualRef.current = visual;
+      console.log('Visual created:', visual.name);
+
+      // Add data fields
+      for (const field of config.dataFields) {
+        try {
+          const schema = field.isMeasure ? schemas.measure : schemas.column;
+          await visual.addDataField(field.dataRole, {
+            table: field.table,
+            [field.isMeasure ? "measure" : "column"]: field.column,
+            schema: schema
+          });
+          console.log(`Added data field: ${field.dataRole} = ${field.table}[${field.column}]`);
+        } catch (fieldError) {
+          console.error(`Error adding field ${field.dataRole}:`, fieldError);
+        }
+      }
+
+      // Set title if provided
+      if (config.title) {
+        try {
+          await visual.setProperty(
+            { objectName: "title", propertyName: "show" },
+            { schema: schemas.property, value: true }
+          );
+          await visual.setProperty(
+            { objectName: "title", propertyName: "text" },
+            { schema: schemas.property, value: config.title }
+          );
+          await visual.setProperty(
+            { objectName: "title", propertyName: "textSize" },
+            { schema: schemas.property, value: 25 }
+          );
+          console.log('Set title:', config.title);
+        } catch (titleError) {
+          console.error('Error setting title:', titleError);
+        }
+      }
+
+      // Apply display properties
+      if (config.properties) {
+        try {
+          if (config.properties.showLegend !== undefined) {
+            await visual.setProperty(
+              { objectName: "legend", propertyName: "show" },
+              { schema: schemas.property, value: config.properties.showLegend }
+            );
+          }
+          if (config.properties.showXAxis !== undefined) {
+            await visual.setProperty(
+              { objectName: "categoryAxis", propertyName: "show" },
+              { schema: schemas.property, value: config.properties.showXAxis }
+            );
+          }
+          if (config.properties.showYAxis !== undefined) {
+            await visual.setProperty(
+              { objectName: "valueAxis", propertyName: "show" },
+              { schema: schemas.property, value: config.properties.showYAxis }
+            );
+          }
+        } catch (propError) {
+          console.error('Error setting properties:', propError);
+        }
+      }
+
+      console.log('Visual configuration applied successfully');
+    } catch (error) {
+      console.error('Error creating visual from AI config:', error);
+      throw error;
     }
   };
 
