@@ -419,32 +419,101 @@ const AuthorVisualAIView: React.FC<AuthorVisualAIViewProps> = ({
     onBack();
   };
 
-  // Keep visual and save
+  // Keep visual and save - matches AuthorVisualView implementation
   const keepVisual = async () => {
-    if (!liveVisual) return;
+    if (!liveVisual) {
+      console.error('No visual to save');
+      return;
+    }
 
     setIsSaving(true);
+    console.log("Keeping visual on page - saving report...");
+
     try {
+      const currentPage = internalPageRef.current || page;
+      // Use ref for immediate access (more reliable than state in async callbacks)
       const report = embeddedReportRef.current;
-      if (report) {
-        await report.save();
-        console.log('Report saved successfully');
+
+      if (!report) {
+        console.error('No report reference available for saving');
+        setIsSaving(false);
+        return;
       }
 
-      const targetPage = internalPageRef.current || page;
+      // Get the visual ID (name) before we clear the reference
       const visualId = liveVisual.name;
-      const pageName = targetPage?.name || '';
+      const pageName = currentPage?.name || createdPageName || '';
 
-      if (onCreateVisual) {
+      console.log('Visual ID to pin:', visualId);
+      console.log('Page name:', pageName);
+      console.log('Created page name:', createdPageName);
+
+      // Save the report to persist the new visual and new page
+      try {
+        console.log('Attempting to save report...');
+        
+        // The report should be dirty because we created a new page
+        const wasSavedBefore = await report.isSaved();
+        console.log('Report isSaved before save():', wasSavedBefore);
+
+        // Create a promise that resolves when 'saved' event fires
+        const savePromise = new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('Save timeout - no saved event received after 30 seconds'));
+          }, 30000);
+
+          report.on('saved', (event: any) => {
+            clearTimeout(timeout);
+            console.log('*** SAVED EVENT RECEIVED ***:', event?.detail);
+            resolve();
+          });
+        });
+
+        // Call save()
+        console.log('Calling report.save()...');
+        const saveResult = await report.save();
+        console.log('report.save() returned:', saveResult);
+
+        // Wait for the saved event to confirm
+        console.log('Waiting for saved event...');
+        await savePromise;
+        console.log('Save confirmed by saved event!');
+
+        // Verify save completed
+        const isSavedAfter = await report.isSaved();
+        console.log('Report isSaved after save():', isSavedAfter);
+        console.log('Report saved successfully');
+      } catch (saveError: any) {
+        console.error('Error saving report:', saveError);
+        console.error('Save error details:', JSON.stringify(saveError, null, 2));
+        // Don't continue if save fails - the visual won't persist
+        alert(`Failed to save report: ${saveError?.message || saveError?.detailedMessage || 'Unknown error'}`);
+        setIsSaving(false);
+        return;
+      }
+
+      // Call onCreateVisual to add the visual to the widgets page
+      if (onCreateVisual && visualId && pageName) {
+        console.log('Adding visual to widgets:', visualId, pageName);
         onCreateVisual(visualId, pageName);
       }
+
+      // Call the legacy callback if provided
       if (onVisualCreated) {
         onVisualCreated();
       }
 
+      // Clear the live visual ref so it doesn't get deleted on unmount
+      setLiveVisual(null);
+      liveVisualRef.current = null;
+      // Clear the created page name so it doesn't get deleted (we're keeping it!)
+      setCreatedPageName(null);
+
+      // Close modal
       onClose();
+
     } catch (error) {
-      console.error('Error saving report:', error);
+      console.error('Error keeping visual:', error);
     } finally {
       setIsSaving(false);
     }
