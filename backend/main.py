@@ -3,28 +3,45 @@ FastAPI Backend for Power BI Embedded with AI Agent Chat
 """
 import os
 import logging 
-from contextlib import asynccontextmanager
-from dotenv import load_dotenv
-from typing import List, Optional
+from typing import Optional
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 from pbi.generate_pbi_token import PowerBITokenGenerator
-from ai.dax_agent import DaxAgent
-from ai.visual_creator_agent import VisualCreatorAgent, VisualConfig
+from ai.agents.dax_agent import DaxAgent
+from ai.agents.visual_creator_agent import VisualCreatorAgent
+from models.response_models import (
+    ChatRequest,
+    ChatResponse,
+    PowerBIConfig,
+    VisualChatRequest,
+    VisualConfigResponse
+)
 
-# Load environment variables
-load_dotenv()
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+logging.getLogger("azure").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
+
 
 # Shared agent instances
 dax_agent = DaxAgent()
 visual_creator_agent = VisualCreatorAgent()
+
+
+# In-memory conversation history (in production, use a database)
+conversation_history = []
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -32,7 +49,7 @@ async def lifespan(app: FastAPI):
     # Startup
     await dax_agent.start()
     await visual_creator_agent.start()
-    await generate_powerbi_token()
+    await initialize_pbi_token()
     yield
     # Shutdown
     await dax_agent.stop()
@@ -54,37 +71,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Request/Response models
-class ChatMessage(BaseModel):
-    role: str  # 'user' or 'assistant'
-    content: str
-
-class ChatRequest(BaseModel):
-    messages: List[ChatMessage]
-    context: Optional[str] = None
-
-class ChatResponse(BaseModel):
-    message: str
-    role: str = "assistant"
-
-class PowerBIConfig(BaseModel):
-    embedUrl: str
-    accessToken: str
-    embedType: str = "report"  # "report" or "visual"
-    visualId: Optional[str] = None
-    reportId: Optional[str] = None
-    workspaceId: Optional[str] = None
-
-class VisualChatRequest(BaseModel):
-    message: str
-    conversationHistory: Optional[List[dict]] = None
-
-class VisualConfigResponse(BaseModel):
-    config: VisualConfig
-    message: str
-
-# In-memory conversation history (in production, use a database)
-conversation_history = []
 
 # Global Power BI token info
 powerbi_token_info = {
@@ -97,7 +83,7 @@ powerbi_token_info = {
     "visuals": []  # List of available visuals
 }
 
-async def generate_powerbi_token():
+async def initialize_pbi_token():
     """Generate Power BI embed token at startup"""
     global powerbi_token_info
     
@@ -274,7 +260,7 @@ async def refresh_powerbi_token():
     Refresh the Power BI embed token
     """
     try:
-        await generate_powerbi_token()
+        await initialize_pbi_token()
         if powerbi_token_info.get("embedToken"):
             return {
                 "success": True,

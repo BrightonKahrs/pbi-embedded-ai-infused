@@ -9,6 +9,7 @@ import json
 import sys
 import asyncio
 from typing import Dict, Optional
+
 import argparse
 from azure.identity import AzureCliCredential, DefaultAzureCredential
 from azure.core.exceptions import ClientAuthenticationError
