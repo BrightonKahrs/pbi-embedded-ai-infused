@@ -1,6 +1,6 @@
 import logging
 
-from agent_framework import ChatMessage
+from agent_framework import Agent, Message
 
 from ai.ai_config import config
 from ai.tools.execute_dax_query_tool import execute_dax_query_tool
@@ -41,14 +41,15 @@ class DaxAgent(BaseAgent):
             raise RuntimeError("DaxAgent not started. Call start() first.")
 
         messages = [
-            ChatMessage(role="system", text=system_instructions),
-            ChatMessage(role="user", text=user_query),
+            Message(role="system", text=system_instructions),
+            Message(role="user", text=user_query),
         ]
 
-        agent = self._client.create_agent(
-            id="DaxAgent", 
-            tools=[execute_dax_query_tool], 
-            messages=messages
+        agent = Agent(
+            client=self._client,
+            name="DaxAgent",
+            instructions=system_instructions,
+            tools=[execute_dax_query_tool],
         )
 
         result = await agent.run(messages=messages)

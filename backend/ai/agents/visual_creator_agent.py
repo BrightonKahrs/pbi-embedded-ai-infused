@@ -1,7 +1,7 @@
 import json
 import logging
 
-from agent_framework import ChatMessage
+from agent_framework import Agent, Message, ChatOptions
 
 from ai.ai_config import config
 from models.visual_models import VisualConfig
@@ -72,16 +72,17 @@ class VisualCreatorAgent(BaseAgent):
             raise RuntimeError("VisualCreatorAgent not started. Call start() first.")
 
         messages = [
-            ChatMessage(role="system", text=system_instructions),
-            ChatMessage(role="user", text=user_message),
+            Message(role="system", text=system_instructions),
+            Message(role="user", text=user_message),
         ]
 
-        agent = self._client.create_agent(
-            id="VisualCreatorAgent", 
-            tools=[], 
-            messages=messages,
-            response_format=VisualConfig
-            )
+        agent = Agent(
+            client=self._client,
+            name="VisualCreatorAgent",
+            instructions=system_instructions,
+            tools=[],
+            default_options=ChatOptions(response_format=VisualConfig),
+        )
 
         result = await agent.run(messages=messages)
 

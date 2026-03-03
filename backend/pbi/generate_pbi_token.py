@@ -239,6 +239,45 @@ class PowerBITokenGenerator:
                     "reportName": "Unknown",
                     "visuals": []
                 }
+        elif response.status_code == 401:
+            # 401 on GenerateToken usually means the workspace is not in Premium/PPU capacity.
+            # For the "User Owns Data" scenario without Premium, use the Azure AD access token directly.
+            logger.warning(
+                "GenerateToken returned 401 (workspace may not be Premium/PPU capacity). "
+                "Falling back to Azure AD access token for embedding."
+            )
+            # Still fetch report details so we have the embed URL
+            if workspace_id:
+                report_url = f"{self.base_url}/groups/{workspace_id}/reports/{report_id}"
+            else:
+                report_url = f"{self.base_url}/reports/{report_id}"
+
+            report_response = requests.get(report_url, headers=headers)
+            if report_response.status_code == 200:
+                report_details = report_response.json()
+                embed_url = report_details.get("embedUrl", "")
+                report_name = report_details.get("name", "Unknown")
+            else:
+                embed_url = (
+                    f"https://app.powerbi.com/reportEmbed?reportId={report_id}"
+                    + (f"&groupId={workspace_id}" if workspace_id else "")
+                )
+                report_name = "Unknown"
+
+            pages = self.get_report_pages(report_id, workspace_id)
+
+            return {
+                "embedToken": self.access_token,  # Use AAD token directly
+                "tokenExpiry": None,
+                "embedUrl": embed_url,
+                "reportId": report_id,
+                "workspaceId": workspace_id,
+                "reportName": report_name,
+                "pages": pages.get("value", []) if pages else [],
+                "visuals": [],
+                "visualDiscoveryNote": "Visual discovery requires client-side JavaScript API after report embedding",
+                "tokenType": "Aad",  # Signal to frontend to use TokenType.Aad
+            }
         else:
             print(f"Error generating embed token: {response.status_code} - {response.text}")
             return {}

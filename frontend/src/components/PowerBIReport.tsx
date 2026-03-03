@@ -33,6 +33,8 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageN
       // Get config with optional visual ID
       const config = await apiService.getPowerBIConfig(visualId);
       
+      const resolvedTokenType = config.tokenType === 'Aad' ? models.TokenType.Aad : models.TokenType.Embed;
+
       if (embedType === 'visual' && visualId) {
         // Visual embedding configuration - requires both visualName and pageName
         if (!pageName) {
@@ -43,7 +45,7 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageN
           type: 'visual',
           embedUrl: config.embedUrl,
           accessToken: config.accessToken,
-          tokenType: models.TokenType.Embed,
+          tokenType: resolvedTokenType,
           visualName: visualId,
           pageName: pageName, // Required for visual embedding
           settings: {
@@ -58,7 +60,7 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageN
           type: 'report',
           embedUrl: config.embedUrl,
           accessToken: config.accessToken,
-          tokenType: models.TokenType.Embed,
+          tokenType: resolvedTokenType,
           viewMode: editMode ? models.ViewMode.Edit : models.ViewMode.View,
           permissions: editMode ? models.Permissions.All : models.Permissions.Read,
           settings: {

@@ -42,6 +42,7 @@ export interface PowerBIConfig {
   embedUrl: string;
   accessToken: string;
   embedType: string;
+  tokenType?: string; // 'Embed' or 'Aad'
   visualName?: string;
   pageName?: string;
 }

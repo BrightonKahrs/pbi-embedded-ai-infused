@@ -80,6 +80,7 @@ powerbi_token_info = {
     "workspaceId": "",
     "tokenExpiry": "",
     "reportName": "",
+    "tokenType": "Embed",  # "Embed" or "Aad"
     "visuals": []  # List of available visuals
 }
 
@@ -231,6 +232,7 @@ async def get_powerbi_config(visual_id: Optional[str] = None):
             embedUrl=embed_url,
             accessToken=powerbi_token_info["embedToken"],
             embedType=embed_type,
+            tokenType=powerbi_token_info.get("tokenType", "Embed"),
             visualId=visual_id,
             reportId=powerbi_token_info.get("reportId"),
             workspaceId=powerbi_token_info.get("workspaceId")

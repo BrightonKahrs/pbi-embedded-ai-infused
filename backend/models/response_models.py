@@ -20,6 +20,7 @@ class PowerBIConfig(BaseModel):
     embedUrl: str
     accessToken: str
     embedType: str = "report"  # "report" or "visual"
+    tokenType: str = "Embed"  # "Embed" or "Aad"
     visualId: Optional[str] = None
     reportId: Optional[str] = None
     workspaceId: Optional[str] = None
