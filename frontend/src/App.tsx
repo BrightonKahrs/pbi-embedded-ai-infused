@@ -432,13 +432,13 @@ function App() {
         {chatMode === 'docked' && (
           <div className="chat-section">
             <ChatShell mode={chatMode} onModeChange={setChatMode}>
-              <AIChat onAddInlineVisual={handleAddInlineVisualToWidgets} />
+              <AIChat onAddInlineVisual={handleAddInlineVisualToWidgets} currentReport={currentReport} />
             </ChatShell>
           </div>
         )}
         {chatMode !== 'docked' && (
           <ChatShell mode={chatMode} onModeChange={setChatMode}>
-            <AIChat onAddInlineVisual={handleAddInlineVisualToWidgets} />
+            <AIChat onAddInlineVisual={handleAddInlineVisualToWidgets} currentReport={currentReport} />
           </ChatShell>
         )}
       </div>

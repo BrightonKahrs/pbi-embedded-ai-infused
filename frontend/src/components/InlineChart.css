@@ -117,3 +117,17 @@
 .inline-chart .recharts-cartesian-axis-tick-value {
   font-family: inherit;
 }
+
+/* Power BI embedded visual inside an inline chat chart. */
+.inline-pbi-embed-frame,
+.inline-pbi-embed-frame iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+.inline-chart-pbi-fallback {
+  display: flex;
+  flex-direction: column;
+}

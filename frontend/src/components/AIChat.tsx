@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { Report } from 'powerbi-client';
 import { apiService, ChatMessage, InlineVisual, AgentEvent } from '../services/api';
-import InlineChart from './InlineChart';
+import InlinePowerBIVisual from './InlinePowerBIVisual';
 import ExplainabilityPanel from './ExplainabilityPanel'; // explainability:
 import './AIChat.css';
 
@@ -14,9 +15,13 @@ interface ChatMessageWithVisuals extends ChatMessage {
 
 interface AIChatProps {
   onAddInlineVisual?: (visual: InlineVisual) => Promise<void>;
+  /** The user's currently embedded Power BI report. When non-null and
+   *  authoring-capable, inline visuals are rendered as real Power BI
+   *  embeds; otherwise they fall back to Recharts. */
+  currentReport?: Report | null;
 }
 
-const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual }) => {
+const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null }) => {
   const [messages, setMessages] = useState<ChatMessageWithVisuals[]>([
     {
       role: 'assistant',
@@ -148,9 +153,11 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual }) => {
                 {hasCharts && (
                   <div className="message-charts">
                     {message.visuals!.map((visual, i) => (
-                      <InlineChart
+                      <InlinePowerBIVisual
                         key={i}
-                        visual={visual}
+                        config={visual.config}
+                        report={currentReport}
+                        fallbackVisual={visual}
                         onAddToPage={
                           onAddInlineVisual
                             ? (vis) => handlePin(index, vis)
