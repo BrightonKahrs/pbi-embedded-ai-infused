@@ -24,18 +24,50 @@ interface PowerBIReportProps {
 }
 
 const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageName, embedType = 'report', editMode = false, hideEditBar = false, onDataSelected, onVisualRef, onReportLoaded }) => {
-  const [embedConfig, setEmbedConfig] = useState<models.IReportEmbedConfiguration | models.IVisualEmbedConfiguration | null>(null);
+  // Build a "bootstrap" embed config — no embedUrl, no accessToken — so
+  // powerbi-client-react synchronously calls `powerbi.bootstrap(...)` on
+  // mount and the Power BI iframe shell appears immediately, before the
+  // backend round-trip for the real embed token completes. Once the real
+  // config arrives we set it in state; the component's componentDidUpdate
+  // detects the change (via lodash.isequal) and finishes the embed in
+  // place without tearing down the iframe.
+  const buildBootstrapConfig = ():
+    | models.IReportEmbedConfiguration
+    | models.IVisualEmbedConfiguration => {
+    if (embedType === 'visual' && visualId) {
+      return {
+        type: 'visual',
+        tokenType: models.TokenType.Embed,
+        embedUrl: '',
+        accessToken: '',
+        visualName: visualId,
+        pageName: pageName || '',
+      } as models.IVisualEmbedConfiguration;
+    }
+    return {
+      type: 'report',
+      tokenType: models.TokenType.Embed,
+      embedUrl: '',
+      accessToken: '',
+    } as models.IReportEmbedConfiguration;
+  };
+
+  const [embedConfig, setEmbedConfig] = useState<
+    models.IReportEmbedConfiguration | models.IVisualEmbedConfiguration
+  >(buildBootstrapConfig);
   const [error, setError] = useState<string>('');
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Reset to a fresh bootstrap config whenever the key props change so the
+    // iframe shell shows immediately while the new token is fetched.
+    setEmbedConfig(buildBootstrapConfig());
+    setError('');
     loadPowerBIConfig();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reportId, visualId, embedType, editMode, hideEditBar]);
+  }, [reportId, visualId, embedType, editMode, hideEditBar, pageName]);
 
   const loadPowerBIConfig = async () => {
     try {
-      setLoading(true);
       setError('');
       
       // Get config with optional visual ID
@@ -122,25 +154,11 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageN
         
         setEmbedConfig(reportEmbedConfiguration);
       }
-      
-      setLoading(false);
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to load Power BI configuration. Please ensure the backend is running and configured.');
-      setLoading(false);
       console.error('Error loading Power BI config:', err);
     }
   };
-
-  if (loading) {
-    return (
-      <div className="powerbi-container">
-        <div className="loading-state">
-          <div className="spinner"></div>
-          <p>Loading Power BI {embedType === 'visual' ? 'Visual' : 'Report'}...</p>
-        </div>
-      </div>
-    );
-  }
 
   if (error) {
     return (
@@ -175,6 +193,17 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageN
         embedConfig={embedConfig}
         cssClassName="powerbi-report-frame"
         getEmbeddedComponent={(embeddedComponent) => {
+          // powerbi-client-react invokes this callback twice when the
+          // bootstrap pattern is in play: once for the bootstrap shell (no
+          // real connection) and again once the full embed config is
+          // applied. Skip the bootstrap pass so consumers don't try to
+          // call report.getPages() etc. on a stub.
+          const isBootstrapPass =
+            !('accessToken' in embedConfig) || !embedConfig.accessToken;
+          if (isBootstrapPass) {
+            console.log('Power BI bootstrap iframe mounted (awaiting token)');
+            return;
+          }
           console.log('Power BI Component Embedded:', embeddedComponent);
           
           // For full report embedding, store the report reference
