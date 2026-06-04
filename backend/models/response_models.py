@@ -1,5 +1,5 @@
-from typing import List, Optional
-from pydantic import BaseModel
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field
 
 from models.visual_models import VisualConfig
 
@@ -12,9 +12,23 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     context: Optional[str] = None
 
+
+class InlineVisual(BaseModel):
+    """A visual the AI suggests rendering inline in the chat bubble.
+
+    Carries both the Power BI visual configuration (for use with
+    page.createVisual when the user clicks "Add to page") and the raw
+    rows captured from the DAX query so the front-end can paint a
+    light-weight Recharts preview without re-querying.
+    """
+    config: VisualConfig
+    data: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     message: str
     role: str = "assistant"
+    visual: Optional[InlineVisual] = None
 
 class PowerBIConfig(BaseModel):
     embedUrl: str

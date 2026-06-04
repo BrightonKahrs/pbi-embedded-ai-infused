@@ -1,9 +1,12 @@
 import json
 import logging
+from typing import Any, Dict, List, Optional
 
 from agent_framework import Agent, ChatOptions
+from agent_framework._skills import SkillsProvider
 
 from ai.ai_config import config
+from ai.skills.chart_suggestion_skill import build_chart_suggestion_skills_source
 from models.visual_models import VisualConfig
 from ai.agents.base_agent import BaseAgent
 
@@ -64,7 +67,10 @@ class VisualCreatorAgent(BaseAgent):
 
     def __init__(self) -> None:
         super().__init__(agent_name="VisualCreatorAgent")
-        
+        # The chart-suggestion skill teaches the agent how to pick a
+        # sensible default visual when answering chat questions inline.
+        self._skills_provider = SkillsProvider(build_chart_suggestion_skills_source())
+
     async def generate_visual_config(self, user_message: str) -> VisualConfig:
         """Generates a visual configuration based on the user's natural language query and data model schema."""
 
@@ -76,6 +82,7 @@ class VisualCreatorAgent(BaseAgent):
             name="VisualCreatorAgent",
             instructions=system_instructions,
             tools=[],
+            context_providers=[self._skills_provider],
             default_options=ChatOptions(response_format=VisualConfig),
         )
 
@@ -87,3 +94,44 @@ class VisualCreatorAgent(BaseAgent):
         else:
             logger.error("Failed to parse visual config from agent response")
             raise ValueError("Invalid visual config response from agent")
+
+    async def suggest_visual_for_rows(
+        self,
+        user_message: str,
+        rows: List[Dict[str, Any]],
+    ) -> Optional[VisualConfig]:
+        """Suggest an inline chart for an answer that already produced rows.
+
+        Returns ``None`` when the rows aren't a good fit for a chart
+        preview (single scalar, too dense, or no obvious categorical
+        column). Otherwise returns a ``VisualConfig`` whose ``dataFields``
+        reference real model tables/columns so the user can later add the
+        chart to a Power BI page.
+        """
+        if not rows:
+            return None
+        # Skip degenerate shapes early so we don't waste an LLM call.
+        if len(rows) == 1 and len(rows[0]) <= 1:
+            return None
+        if len(rows) > 50:
+            return None
+
+        # Sample the first few rows so the model can see column keys
+        # (which carry table/column metadata in `Table[Column]` form) and
+        # representative values without ballooning the prompt.
+        sample = rows[: min(5, len(rows))]
+        prompt = (
+            f"User question: {user_message}\n"
+            f"Result row count: {len(rows)}\n"
+            f"Sample rows (first {len(sample)}):\n"
+            f"{json.dumps(sample, default=str)}\n\n"
+            "Return a VisualConfig that previews these rows well as an "
+            "inline chat chart. Use exact table/column names from the "
+            "data model. Do not invent fields."
+        )
+
+        try:
+            return await self.generate_visual_config(prompt)
+        except Exception as e:  # noqa: BLE001 - swallow so chat still works
+            logger.warning(f"Could not suggest inline visual: {e}")
+            return None

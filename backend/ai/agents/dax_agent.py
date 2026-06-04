@@ -1,7 +1,10 @@
+import json
 import logging
+from typing import Annotated, Any, Dict, List, Optional, Tuple
 
 from agent_framework import Agent
 from agent_framework._skills import SkillsProvider
+from pydantic import Field
 
 from ai.tools.execute_dax_query_tool import execute_dax_query_tool
 from ai.tools.inspect_data_model_tool import inspect_data_model_tool
@@ -44,25 +47,53 @@ class DaxAgent(BaseAgent):
         super().__init__(agent_name="DaxAgent")
         self._skills_provider = SkillsProvider(build_dax_skills_source())
 
-    async def generate_dax_query(self, user_query: str) -> str:
-        """Generates a DAX query based on the user's natural language query and data model schema.
+    async def generate_dax_query(
+        self, user_query: str
+    ) -> Tuple[str, Optional[List[Dict[str, Any]]]]:
+        """Generate the DAX-driven answer for a user question.
 
-        Args:
-            user_query (str): The natural language query from the user."""
-
+        Returns a tuple ``(answer_text, captured_rows)``. ``captured_rows``
+        is the raw list of dictionaries returned by the most recent
+        ``execute_dax_query_tool`` invocation during this run, or ``None``
+        if no successful query was executed. The caller can pair the rows
+        with a ``VisualConfig`` to produce an inline chart.
+        """
         self._ensure_client()
 
         if not self._client:
             raise RuntimeError("DaxAgent not started. Call start() first.")
 
+        # Per-request capture state. We wrap the existing tool so we can
+        # observe the rows it returned without changing its public API.
+        captured: Dict[str, Any] = {"rows": None, "dax": None}
+
+        async def execute_dax_query_tool_capture(
+            dax_query: Annotated[
+                str,
+                Field(description="The DAX query to execute on the power bi semantic model"),
+            ],
+        ) -> str:
+            """Execute a DAX query against the Power BI dataset and capture rows for charting."""
+            result = await execute_dax_query_tool(dax_query)
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, list):
+                    captured["rows"] = parsed
+                    captured["dax"] = dax_query
+            except (json.JSONDecodeError, ValueError):
+                # Tool returned an error string, not JSON rows — leave
+                # captured rows as None so the chat won't suggest a visual.
+                pass
+            return result
+
         agent = Agent(
             client=self._client,
             name="DaxAgent",
             instructions=SYSTEM_INSTRUCTIONS,
-            tools=[execute_dax_query_tool, inspect_data_model_tool],
+            tools=[execute_dax_query_tool_capture, inspect_data_model_tool],
             context_providers=[self._skills_provider],
         )
 
         result = await agent.run(messages=user_query)
-        logger.info(f"Generated DAX Query: {result.text}")
-        return result.text
+        logger.info(f"DAX agent answer: {result.text}")
+        return result.text, captured["rows"]

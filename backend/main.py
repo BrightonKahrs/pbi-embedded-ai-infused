@@ -15,6 +15,7 @@ from ai.agents.visual_creator_agent import VisualCreatorAgent
 from models.response_models import (
     ChatRequest,
     ChatResponse,
+    InlineVisual,
     PowerBIConfig,
     VisualChatRequest,
     VisualConfigResponse
@@ -175,17 +176,38 @@ async def chat_with_agent(request: ChatRequest):
             "content": user_message.content
         })
         
-        # Get response from AI agent (using shared dax_agent instance)
-        response_content = await dax_agent.generate_dax_query(
+        # Get response from DAX agent. The agent now returns both the
+        # prose answer and the raw rows it queried, so we can offer an
+        # inline chart preview when the result has a chart-friendly shape.
+        response_content, captured_rows = await dax_agent.generate_dax_query(
             user_query=user_message.content
         )
-        
+
+        inline_visual: Optional[InlineVisual] = None
+        if captured_rows:
+            try:
+                suggested = await visual_creator_agent.suggest_visual_for_rows(
+                    user_message=user_message.content,
+                    rows=captured_rows,
+                )
+                if suggested is not None:
+                    inline_visual = InlineVisual(
+                        config=suggested,
+                        data=captured_rows,
+                    )
+            except Exception as e:  # noqa: BLE001 - chart is best-effort
+                logger.warning(f"Inline visual suggestion failed: {e}")
+
         conversation_history.append({
             "role": "assistant",
             "content": response_content
         })
-        
-        return ChatResponse(message=response_content, role="assistant")
+
+        return ChatResponse(
+            message=response_content,
+            role="assistant",
+            visual=inline_visual,
+        )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")

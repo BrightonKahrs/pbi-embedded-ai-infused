@@ -12,9 +12,16 @@ export interface ChatRequest {
   context?: string;
 }
 
+export interface InlineVisual {
+  config: VisualConfig;
+  /** Raw rows captured from the DAX query, keyed by `Table[Column]` or `[Measure]`. */
+  data: Array<Record<string, any>>;
+}
+
 export interface ChatResponse {
   message: string;
   role: string;
+  visual?: InlineVisual | null;
 }
 
 export interface VisualConfig {
