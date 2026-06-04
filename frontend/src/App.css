@@ -172,6 +172,14 @@
   flex-direction: column;
 }
 
+/* When ChatShell is in minimized or fullscreen mode it positions itself
+   (display:none for the panel, position:fixed for fullscreen + launcher),
+   so the grid cell that previously held the docked chat should not
+   reserve any space. */
+.chat-section-detached {
+  display: contents;
+}
+
 @media (max-width: 1024px) {
   .App-content,
   .App-content.chat-mode-docked {

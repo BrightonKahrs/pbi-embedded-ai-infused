@@ -10,21 +10,7 @@ interface ChatShellProps {
 }
 
 const ChatShell: React.FC<ChatShellProps> = ({ mode, onModeChange, children }) => {
-  if (mode === 'minimized') {
-    return (
-      <button
-        type="button"
-        className="chat-shell-launcher"
-        onClick={() => onModeChange('docked')}
-        title="Open AI Assistant"
-        aria-label="Open AI Assistant"
-      >
-        <span className="chat-shell-launcher-icon" aria-hidden="true">💬</span>
-        <span className="chat-shell-launcher-label">AI Assistant</span>
-      </button>
-    );
-  }
-
+  const isMinimized = mode === 'minimized';
   const isFullscreen = mode === 'fullscreen';
 
   return (
@@ -36,10 +22,17 @@ const ChatShell: React.FC<ChatShellProps> = ({ mode, onModeChange, children }) =
           aria-hidden="true"
         />
       )}
+      {/* The panel is ALWAYS rendered so that the inner chat subtree
+          (and any non-context-backed state living inside it) survives
+          mode changes. When minimized we just visually hide it via CSS
+          and rely on the floating launcher to bring it back. */}
       <section
-        className={`chat-shell chat-shell-${mode}`}
+        className={`chat-shell chat-shell-${mode}${
+          isMinimized ? ' chat-shell-hidden' : ''
+        }`}
         role="complementary"
         aria-label="AI Assistant"
+        aria-hidden={isMinimized}
       >
         <header className="chat-shell-header">
           <div className="chat-shell-title">
@@ -53,6 +46,7 @@ const ChatShell: React.FC<ChatShellProps> = ({ mode, onModeChange, children }) =
               onClick={() => onModeChange('minimized')}
               title="Minimize chat"
               aria-label="Minimize chat"
+              tabIndex={isMinimized ? -1 : 0}
             >
               <span aria-hidden="true">➖</span>
             </button>
@@ -62,6 +56,7 @@ const ChatShell: React.FC<ChatShellProps> = ({ mode, onModeChange, children }) =
               onClick={() => onModeChange(isFullscreen ? 'docked' : 'fullscreen')}
               title={isFullscreen ? 'Exit fullscreen' : 'Expand to fullscreen'}
               aria-label={isFullscreen ? 'Exit fullscreen' : 'Expand to fullscreen'}
+              tabIndex={isMinimized ? -1 : 0}
             >
               <span aria-hidden="true">{isFullscreen ? '⤢' : '⛶'}</span>
             </button>
@@ -71,6 +66,7 @@ const ChatShell: React.FC<ChatShellProps> = ({ mode, onModeChange, children }) =
               onClick={() => onModeChange('minimized')}
               title="Close chat"
               aria-label="Close chat"
+              tabIndex={isMinimized ? -1 : 0}
             >
               <span aria-hidden="true">✕</span>
             </button>
@@ -78,6 +74,18 @@ const ChatShell: React.FC<ChatShellProps> = ({ mode, onModeChange, children }) =
         </header>
         <div className="chat-shell-body">{children}</div>
       </section>
+      {isMinimized && (
+        <button
+          type="button"
+          className="chat-shell-launcher"
+          onClick={() => onModeChange('docked')}
+          title="Open AI Assistant"
+          aria-label="Open AI Assistant"
+        >
+          <span className="chat-shell-launcher-icon" aria-hidden="true">💬</span>
+          <span className="chat-shell-launcher-label">AI Assistant</span>
+        </button>
+      )}
     </>
   );
 };

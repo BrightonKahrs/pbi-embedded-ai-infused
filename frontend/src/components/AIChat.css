@@ -241,17 +241,9 @@
   color: #64748b;
 }
 
-/* RUN markers — small pill, very subdued */
-.activity-run-marker {
-  align-self: center;
-  background: transparent;
-  border: none;
-  color: #94a3b8;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 2px 6px;
-}
+/* RUN markers — pill removed (RUN_STARTED/RUN_FINISHED are now filtered
+   from the timeline; the bottom "AI is working…" pulse covers status).
+   Keep the .activity-dot helpers in case future event types want them. */
 .activity-dot {
   display: inline-block;
   width: 8px;
@@ -263,7 +255,7 @@
   background: #10b981;
 }
 
-/* STEP chips — narrow inline tag */
+/* STEP chips — kept for future use, but currently filtered upstream. */
 .activity-step {
   background: rgba(59, 130, 246, 0.08);
   border-color: rgba(59, 130, 246, 0.25);
@@ -284,6 +276,7 @@
   align-items: stretch;
   gap: 0;
   padding: 0;
+  max-width: 100%;
 }
 .activity-tool-head {
   display: flex;
@@ -298,20 +291,41 @@
   color: inherit;
   font-size: inherit;
 }
+.activity-tool-head:disabled {
+  cursor: default;
+}
+.activity-tool .activity-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.activity-tool-line {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
 .activity-tool-verb {
   font-weight: 600;
 }
 .activity-tool-args {
+  display: block;
   opacity: 0.85;
-  margin-left: 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 .activity-tool-result {
-  margin-left: 4px;
+  display: block;
   color: #166534;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 .activity-tool-detail {
   padding: 0 10px 8px;
@@ -344,18 +358,21 @@
   flex-direction: column;
   align-items: stretch;
   gap: 2px;
+  padding: 8px 12px;
 }
 .activity-handoff-title {
   display: flex;
   align-items: center;
   gap: 8px;
   font-weight: 600;
+  font-size: 12px;
 }
 .activity-handoff-reason {
   font-style: italic;
   color: #6b21a8;
   font-size: 11px;
   padding-left: 24px;
+  line-height: 1.35;
 }
 
 /* Other CUSTOM events */

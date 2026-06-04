@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Report } from 'powerbi-client';
 import { apiService, InlineVisual, VisualConfig } from '../services/api';
-import { useAgentStream, StreamChatMessage, ToolCall } from '../hooks/useAgentStream';
+import { StreamChatMessage, ToolCall } from '../hooks/useAgentStream';
+import { useAgentStreamContext } from '../contexts/AgentStreamContext';
 import {
   AGUIEvent,
   AGUIEventType,
@@ -12,7 +13,8 @@ import {
 import InlinePowerBIVisual from './InlinePowerBIVisual';
 import './AIChat.css';
 
-const GREETING = "Hello! I'm your AI assistant for Power BI analytics. How can I help you today?";
+export const GREETING =
+  "Hello! I'm your AI assistant for Power BI analytics. How can I help you today?";
 
 interface AIChatProps {
   onAddInlineVisual?: (visual: InlineVisual) => Promise<void>;
@@ -48,26 +50,37 @@ type TimelineItem =
   | { kind: 'activity'; ts: number; key: string; event: TimestampedEvent };
 
 /** Events we render as their own inline activity card. Anything that is
- * already represented by a bubble (TEXT_MESSAGE_*) or rolled up into a
- * tool-call chip (TOOL_CALL_ARGS/END/RESULT) is filtered out.
+ * already represented by a bubble (TEXT_MESSAGE_*), rolled up into a
+ * tool-call chip (TOOL_CALL_ARGS/END/RESULT), already shown inside the
+ * assistant bubble (InlineVisuals), or noise the user can't act on
+ * (RUN_STARTED/RUN_FINISHED — we show a single bottom "AI is working…"
+ * pulse instead — STEP_*, and AG-UI usage/billing events) is filtered
+ * out so the timeline stays clean.
  */
 function isRenderableActivity(event: AGUIEvent): boolean {
+  // Filter out any usage/billing events (case-insensitive). These have
+  // no actionable info for the end user and tend to render as noise.
+  const t = (event as { type?: string }).type;
+  if (typeof t === 'string' && t.toLowerCase().includes('usage')) {
+    return false;
+  }
+
   switch (event.type) {
-    case AGUIEventType.RUN_STARTED:
-    case AGUIEventType.RUN_FINISHED:
     case AGUIEventType.RUN_ERROR:
-    case AGUIEventType.STEP_STARTED:
-    case AGUIEventType.STEP_FINISHED:
     case AGUIEventType.TOOL_CALL_START:
     case AGUIEventType.REASONING_START:
+      return true;
     case AGUIEventType.CUSTOM:
+      // The InlineVisuals payload is already rendered inside the assistant
+      // bubble (see `message.visuals`), so suppress the redundant chip.
+      if (event.name === 'InlineVisuals') return false;
       return true;
     default:
       return false;
   }
 }
 
-function shortenArgs(args: string, max = 60): string {
+function shortenArgs(args: string, max = 80): string {
   const trimmed = args.trim();
   if (!trimmed) return '';
   // Try to parse JSON so we can render `{key: value}` compactly.
@@ -91,7 +104,7 @@ function shortenArgs(args: string, max = 60): string {
 
 function shortenResult(result: string | undefined, max = 120): string {
   if (!result) return '';
-  const r = result.trim();
+  const r = result.trim().replace(/\s+/g, ' ');
   return r.length > max ? r.slice(0, max) + '…' : r;
 }
 
@@ -107,46 +120,11 @@ const ActivityCard: React.FC<ActivityCardProps> = ({ event, toolCalls, reasoning
   const [open, setOpen] = useState(false);
   const e = event.event;
 
-  // --- RUN_* timeline markers ---
-  if (e.type === AGUIEventType.RUN_STARTED) {
-    return (
-      <div className="activity activity-run-marker activity-run-started">
-        <span className="activity-dot" />
-        <span>Run started</span>
-      </div>
-    );
-  }
-  if (e.type === AGUIEventType.RUN_FINISHED) {
-    return (
-      <div className="activity activity-run-marker activity-run-finished">
-        <span className="activity-dot activity-dot-done" />
-        <span>Done</span>
-      </div>
-    );
-  }
   if (e.type === AGUIEventType.RUN_ERROR) {
     return (
       <div className="activity activity-error">
         <span className="activity-icon">❌</span>
         <span className="activity-text">{e.message || 'Run failed'}</span>
-      </div>
-    );
-  }
-
-  // --- STEP_* small chip ---
-  if (e.type === AGUIEventType.STEP_STARTED) {
-    return (
-      <div className="activity activity-step">
-        <span className="activity-icon">▶</span>
-        <span className="activity-text">{e.stepName}</span>
-      </div>
-    );
-  }
-  if (e.type === AGUIEventType.STEP_FINISHED) {
-    return (
-      <div className="activity activity-step activity-step-finished">
-        <span className="activity-icon">▣</span>
-        <span className="activity-text">{e.stepName}</span>
       </div>
     );
   }
@@ -167,22 +145,8 @@ const ActivityCard: React.FC<ActivityCardProps> = ({ event, toolCalls, reasoning
         </div>
       );
     }
-    if (e.name === 'InlineVisuals') {
-      // InlineVisuals are attached to the assistant message bubble, so
-      // we keep the activity card minimal — just a "visuals ready" note.
-      const visuals =
-        e.value && typeof e.value === 'object' && 'visuals' in (e.value as any)
-          ? ((e.value as any).visuals as unknown[]) ?? []
-          : [];
-      return (
-        <div className="activity activity-custom">
-          <span className="activity-icon">📊</span>
-          <span className="activity-text">
-            Inline visual{visuals.length === 1 ? '' : 's'} ready ({visuals.length})
-          </span>
-        </div>
-      );
-    }
+    // InlineVisuals are intentionally filtered out upstream; any other
+    // CUSTOM event we don't recognise gets a generic chip.
     return (
       <div className="activity activity-custom">
         <span className="activity-icon">✨</span>
@@ -198,30 +162,34 @@ const ActivityCard: React.FC<ActivityCardProps> = ({ event, toolCalls, reasoning
     const argsPreview = tc ? shortenArgs(tc.args) : '';
     const resultPreview = tc?.result ? shortenResult(tc.result) : '';
     const isDone = status === 'complete';
+    const hasDetail = !!(tc?.args || tc?.result);
     return (
       <div className={`activity activity-tool ${isDone ? 'activity-tool-done' : ''}`}>
         <button
           type="button"
           className="activity-tool-head"
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => hasDetail && setOpen((v) => !v)}
           aria-expanded={open}
+          disabled={!hasDetail}
         >
           <span className="activity-icon">
             {isDone ? '✅' : <span className="activity-spinner" aria-hidden="true" />}
           </span>
           <span className="activity-text">
-            <span className="activity-tool-verb">{isDone ? 'tool' : 'Calling tool'}</span>{' '}
-            <code>{e.toolCallName}</code>
+            <span className="activity-tool-line">
+              <span className="activity-tool-verb">{isDone ? 'tool' : 'Calling tool'}</span>{' '}
+              <code>{e.toolCallName}</code>
+              {hasDetail && (
+                <span className="activity-chev">{open ? '▾' : '▸'}</span>
+              )}
+            </span>
             {argsPreview && (
               <span className="activity-tool-args">({argsPreview})</span>
             )}
             {isDone && resultPreview && (
-              <span className="activity-tool-result"> → {resultPreview}</span>
+              <span className="activity-tool-result">→ {resultPreview}</span>
             )}
           </span>
-          {(tc?.args || tc?.result) && (
-            <span className="activity-chev">{open ? '▾' : '▸'}</span>
-          )}
         </button>
         {open && (
           <div className="activity-tool-detail">
@@ -294,11 +262,13 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null
     error,
     sendMessage,
     clear,
-  } = useAgentStream({ initialAssistantGreeting: GREETING });
+    pinnedMessages,
+    markPinned,
+    pinErrors,
+    setPinError,
+  } = useAgentStreamContext();
 
   const [inputValue, setInputValue] = useState('');
-  const [pinnedMessages, setPinnedMessages] = useState<Set<string>>(new Set());
-  const [pinErrors, setPinErrors] = useState<Record<string, string>>({});
   const timelineEndRef = useRef<HTMLDivElement>(null);
 
   // Merge messages + activity events into one chronologically-sorted
@@ -332,17 +302,8 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null
     if (!onAddInlineVisual) return;
     try {
       await onAddInlineVisual(visual);
-      setPinnedMessages((prev) => {
-        const next = new Set(prev);
-        next.add(messageId);
-        return next;
-      });
-      setPinErrors((prev) => {
-        if (!prev[messageId]) return prev;
-        const next = { ...prev };
-        delete next[messageId];
-        return next;
-      });
+      markPinned(messageId);
+      setPinError(messageId, null);
     } catch (err: any) {
       // Power BI SDK rejections often have neither `.message` nor a useful
       // `toString()`, so coerce through a chain of fallbacks before we give up
@@ -358,7 +319,7 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null
             return String(err);
           }
         })();
-      setPinErrors((prev) => ({ ...prev, [messageId]: msg }));
+      setPinError(messageId, msg);
     }
   };
 
@@ -377,12 +338,20 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null
       // Non-fatal — streaming endpoint is stateless; legacy history is best-effort.
     }
     clear();
-    setPinnedMessages(new Set());
-    setPinErrors({});
   };
 
   const renderMessage = (message: StreamChatMessage) => {
     const hasCharts = !!(message.visuals && message.visuals.length > 0);
+    // Suppress the empty white placeholder bubble that otherwise shows up
+    // the instant TEXT_MESSAGE_START arrives but before any content/visuals.
+    if (
+      message.role === 'assistant'
+      && !message.content
+      && !hasCharts
+      && !message.isStreaming
+    ) {
+      return null;
+    }
     const pinned = pinnedMessages.has(message.id);
     const pinError = pinErrors[message.id];
     return (

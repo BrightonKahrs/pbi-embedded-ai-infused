@@ -22,24 +22,32 @@ describe('ChatShell', () => {
     ).not.toBeInTheDocument();
   });
 
-  test('shows the floating launcher only when minimized', () => {
+  test('shows the floating launcher only when minimized; keeps the panel mounted', () => {
     render(<Harness initial="docked" />);
 
-    // Minimize -> launcher visible, header gone
+    // Minimize -> launcher visible; panel hidden via CSS class but the
+    // chat child stays mounted so its state survives.
     userEvent.click(screen.getByRole('button', { name: /minimize chat/i }));
     expect(
       screen.getByRole('button', { name: /open ai assistant/i }),
     ).toBeInTheDocument();
-    expect(screen.queryByTestId('chat-child')).not.toBeInTheDocument();
+    const child = screen.getByTestId('chat-child');
+    expect(child).toBeInTheDocument();
+    // Walk up to the .chat-shell container and assert it's the hidden one.
+    const shell = child.closest('.chat-shell');
+    expect(shell).not.toBeNull();
+    expect(shell).toHaveClass('chat-shell-hidden');
+    expect(shell).toHaveAttribute('aria-hidden', 'true');
 
-    // Restore -> launcher gone, child back
+    // Restore -> launcher gone, panel back to visible.
     userEvent.click(
       screen.getByRole('button', { name: /open ai assistant/i }),
     );
     expect(
       screen.queryByRole('button', { name: /open ai assistant/i }),
     ).not.toBeInTheDocument();
-    expect(screen.getByTestId('chat-child')).toBeInTheDocument();
+    const restored = screen.getByTestId('chat-child').closest('.chat-shell');
+    expect(restored).not.toHaveClass('chat-shell-hidden');
   });
 
   test('toggles fullscreen and back to docked', () => {
