@@ -36,13 +36,6 @@ export interface MaterializeOptions {
   pageNamePrefix?: string;
   /** Partial layout overrides merged onto the default `VISUAL_LAYOUT`. */
   layout?: Partial<typeof VISUAL_LAYOUT>;
-  /** When true, the first `setProperty` failure aborts the whole flow and
-   *  the function resolves to `null`. Used by the inline preview path —
-   *  property writes 401 against the service for in-memory visuals, so
-   *  there's no point continuing to try every property. The pin-to-widgets
-   *  path leaves this false (default) so a missing decorative property
-   *  doesn't kill an otherwise successful pin. */
-  abortOnPropertyFailure?: boolean;
 }
 
 /**
@@ -78,22 +71,19 @@ function rethrowWithContext(phase: string, error: unknown): never {
 
 /**
  * Shared internals for both `pinInlineVisualToReport` (pin + save) and
- * `createInlineVisualOnly` (in-memory only). Creates a fresh page,
+ * `createInlineVisualOnly` (save-and-embed). Creates a fresh page,
  * materialises the visual on it, binds data fields, and sets
- * title/display properties.
- *
- * Returns `null` when `abortOnPropertyFailure` is set and a `setProperty`
- * call rejected — the caller should fall back to its own renderer.
+ * title/display properties. Persistence (`report.save()`) is the
+ * responsibility of the caller.
  */
 async function _materializeVisual(
   report: Report,
   config: VisualConfig,
   opts: MaterializeOptions = {}
-): Promise<PinResult | null> {
+): Promise<PinResult> {
   const prefix = opts.pageNamePrefix ?? 'AI_Inline';
   const newPageName = `${prefix}_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   const layout = { ...VISUAL_LAYOUT, ...(opts.layout ?? {}) };
-  const abortOnPropertyFailure = !!opts.abortOnPropertyFailure;
 
   // 1. Create a fresh page to host the visual.
   try {
@@ -153,10 +143,12 @@ async function _materializeVisual(
     }
   }
 
-  // 4-5. Properties (title + display). In the inline-preview path these
-  // 401 against the service because the visual is in-memory only, so we
-  // wrap the whole batch in a single try/catch and bail out on the first
-  // failure rather than spamming the console with one warning per property.
+  // 4-5. Properties (title + display). On a SAVED visual these now reach
+  // the service successfully; the previous in-memory path 401'd, but with
+  // `report.save()` writing the visual server-side this batch should work.
+  // We still treat individual property failures as non-fatal — a missing
+  // decorative property must not kill an otherwise valid visual. Surface
+  // them as warnings so real regressions are visible in the devtools.
   type PropertySpec = {
     objectName: string;
     propertyName: string;
@@ -194,25 +186,18 @@ async function _materializeVisual(
     }
   }
 
-  try {
-    for (const spec of propertySpecs) {
+  for (const spec of propertySpecs) {
+    try {
       await visual.setProperty(
         { objectName: spec.objectName, propertyName: spec.propertyName },
         { schema: schemas.property, value: spec.value }
       );
+    } catch (err) {
+      console.warn(
+        `inlineVisualPinner: setProperty ${spec.objectName}.${spec.propertyName} failed`,
+        err
+      );
     }
-  } catch (err) {
-    console.debug(
-      'inlineVisualPinner: setProperty failed; ' +
-        (abortOnPropertyFailure ? 'aborting' : 'continuing'),
-      err
-    );
-    if (abortOnPropertyFailure) {
-      return null;
-    }
-    // For the pin-to-widgets path a single decorative property failure
-    // shouldn't kill the pin — the visual itself was created successfully
-    // and save() can still persist it.
   }
 
   return { visualId: visual.name, pageName: newPage.name };
@@ -229,11 +214,6 @@ export async function pinInlineVisualToReport(
   config: VisualConfig
 ): Promise<PinResult> {
   const result = await _materializeVisual(report, config);
-  if (!result) {
-    // _materializeVisual only returns null when abortOnPropertyFailure is
-    // set (and this code path does not set it). Defensive.
-    throw new Error('inlineVisualPinner: failed to materialise visual');
-  }
 
   // 6. Best-effort save. The visual exists in the in-memory report regardless
   // of whether persistence succeeds, which is enough for the widgets tab to
@@ -261,22 +241,109 @@ export async function pinInlineVisualToReport(
 }
 
 /**
- * Same as `pinInlineVisualToReport` but skips `report.save()`. Use this when
- * you want to materialise a visual purely in the in-memory report so it can
- * be embedded with the `visual` embed type without dirtying the saved
- * report.
+ * Materialise an inline visual on a fresh page AND persist via
+ * `report.save()` so the visual exists server-side. This is required for
+ * the second iframe (the inline chat visual embed) to fetch the visual:
+ * an unsaved in-memory visual gets 401'd by the service.
  *
- * Resolves to `null` if any `setProperty` call rejected — the consumer
- * (e.g. `InlinePowerBIVisual`) treats that as a signal to fall back to its
- * Recharts renderer.
+ * Returns `null` when the save step fails (e.g. the user lacks edit
+ * permissions on the report). Callers should fall back to their own
+ * renderer (Recharts) in that case.
  */
 export async function createInlineVisualOnly(
   report: Report,
   config: VisualConfig,
   opts: MaterializeOptions = {}
 ): Promise<PinResult | null> {
-  return _materializeVisual(report, config, {
-    ...opts,
-    abortOnPropertyFailure: opts.abortOnPropertyFailure ?? true,
-  });
+  const result = await _materializeVisual(report, config, opts);
+
+  try {
+    const savePromise = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Save timeout - no saved event received'));
+      }, SAVE_TIMEOUT_MS);
+      report.on('saved', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+    await report.save();
+    await savePromise;
+  } catch (saveError) {
+    console.warn(
+      'inlineVisualPinner: report.save() failed; falling back to non-PBI render',
+      saveError
+    );
+    // Best-effort: try to remove the orphan page we created so we don't
+    // leak a stray empty page in the in-memory report.
+    try {
+      await report.deletePage(result.pageName);
+    } catch {
+      /* non-fatal */
+    }
+    return null;
+  }
+
+  return result;
+}
+
+/**
+ * Remove every page whose name or displayName looks like an AI-generated
+ * inline-chat page (prefix `AI_InlineChat`). Best-effort: failures are
+ * swallowed so this never breaks the chat shell.
+ *
+ * Run at chat-shell mount so a fresh session starts with a clean report.
+ */
+export async function cleanupAIPages(report: Report): Promise<void> {
+  if (!report) return;
+  try {
+    const pages = await report.getPages();
+    const stale = pages.filter((p) => {
+      const name = (p as any).name ?? '';
+      const displayName = (p as any).displayName ?? '';
+      return (
+        typeof name === 'string' &&
+        (name.startsWith('AI_InlineChat') ||
+          displayName.startsWith('AI_InlineChat'))
+      );
+    });
+    if (stale.length === 0) return;
+
+    // If we're about to delete the active page, switch off it first so
+    // the SDK doesn't reject the delete.
+    try {
+      const remaining = pages.find(
+        (p) =>
+          !stale.some(
+            (s) => ((s as any).name ?? '') === ((p as any).name ?? '')
+          )
+      );
+      if (remaining) {
+        try {
+          await remaining.setActive();
+        } catch {
+          /* non-fatal */
+        }
+      }
+    } catch {
+      /* non-fatal */
+    }
+
+    for (const page of stale) {
+      const pageName = (page as any).name as string | undefined;
+      if (!pageName) continue;
+      try {
+        await report.deletePage(pageName);
+      } catch (err) {
+        // Silent — the page may already be gone, or the report may not be
+        // in authoring mode. Either way, leftover pages are harmless.
+        console.debug(
+          `cleanupAIPages: could not delete page "${pageName}"`,
+          err
+        );
+      }
+    }
+  } catch (err) {
+    console.debug('cleanupAIPages: enumerating pages failed', err);
+  }
 }

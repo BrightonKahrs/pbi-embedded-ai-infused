@@ -12,6 +12,7 @@ import { useAgentStreamContext } from '../contexts/AgentStreamContext';
 import { InlineVisualWire } from '../types/ag-ui';
 import InlinePowerBIVisual from './InlinePowerBIVisual';
 import MessageMarkdown from './MessageMarkdown';
+import { cleanupAIPages } from '../services/inlineVisualPinner';
 import './AIChat.css';
 
 export const GREETING =
@@ -293,10 +294,21 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null
 
   const [inputValue, setInputValue] = useState('');
   const timelineEndRef = useRef<HTMLDivElement>(null);
+  const cleanupRanForReportRef = useRef<Report | null>(null);
 
   useEffect(() => {
     timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [timelineItems, messages, isRunning]);
+
+  // On first mount with an authoring-capable report, sweep any leftover
+  // AI_InlineChat_* pages from a previous chat session. Best-effort —
+  // failures are silent inside `cleanupAIPages`.
+  useEffect(() => {
+    if (!currentReport) return;
+    if (cleanupRanForReportRef.current === currentReport) return;
+    cleanupRanForReportRef.current = currentReport;
+    void cleanupAIPages(currentReport);
+  }, [currentReport]);
 
   const handlePin = async (messageId: string, visual: InlineVisual) => {
     if (!onAddInlineVisual) return;
