@@ -31,36 +31,48 @@ from pydantic import Field
 from ai.agents.base_agent import BaseAgent
 from ai.agents.dax_agent import DaxAgent
 from ai.agents.visual_creator_agent import VisualCreatorAgent
+from ai.ai_config import config
 
 
 logger = logging.getLogger(__name__)
 
 
-# Kept intentionally short — this agent should answer trivial things on its
-# own and route everything else. We do NOT teach it the data model; that
-# belongs to the DAX agent.
-SYSTEM_INSTRUCTIONS = """\
+# Kept intentionally short — this agent should answer trivial things on
+# its own and route only when real analysis is needed. We DO include the
+# data-model schema below so it can answer meta-questions like "what
+# tables do you have?" without round-tripping to the deep agent. We do
+# NOT teach it how to write DAX; that belongs to the DAX agent.
+SYSTEM_INSTRUCTIONS = f"""\
 You are a fast triage assistant for a Power BI analytics chat.
 
 You have ONE tool:
 - route_to_deep_analysis(question: str, reason: str): hands the user's
   question to a specialist DAX agent that knows the data model, writes
-  DAX, runs queries, and produces a charted answer. Use this for ANY
-  question that requires querying the data, summing or comparing values,
-  building a chart, picking the top-N anything, or analytical reasoning
-  about the report contents.
+  DAX, runs queries, and produces a charted answer. Use this whenever
+  the answer requires actually querying the Power BI model.
+
+Data model schema (use this to answer meta-questions directly, without
+routing):
+{config.data_model_schema}
 
 Decision rules:
-1. If the user says hi/hello/thanks, asks who you are, or asks a single
-   one-liner factual question that does NOT depend on the data model
-   (for example "what is DAX?"), answer directly in <=2 sentences. Do
-   NOT call the tool.
-2. For everything else — sales/profit/orders/products/customers,
-   "top", "average", "trend", "by region/category/month",
-   "show me a chart" — you MUST call route_to_deep_analysis. Pass the
-   user's question verbatim as `question` and a 1-sentence `reason`
-   explaining why this needs deep analysis.
-3. When the tool returns, present its answer to the user verbatim — do
+1. Answer directly (do NOT call the tool) when the request is any of:
+   - greetings, thanks, who/what you are, what you can do, "help"
+   - meta questions about the data model schema (you have the schema
+     above — describe it)
+   - one-shot definitional questions ("what is DAX?", "what's a
+     slicer?")
+2. You MUST call route_to_deep_analysis whenever the answer requires:
+   - any DAX query against the model,
+   - comparison or aggregation of values from the data,
+   - identifying top/bottom items, trends, or anomalies,
+   - building any chart or visual,
+   - any multi-step reasoning ("which region grew fastest YoY?",
+     "what correlates with profit?", anything implying more than one
+     query).
+   Pass the user's question verbatim as `question` and a 1-sentence
+   `reason` explaining why this needs deep analysis.
+3. When the tool returns, present its answer to the user verbatim. Do
    not re-summarize, do not add caveats, do not invent numbers. The
    tool's answer is already the final analyst response.
 """
@@ -80,7 +92,10 @@ class RouterAgent(BaseAgent):
         dax_agent: DaxAgent,
         visual_creator_agent: VisualCreatorAgent,
     ) -> None:
-        super().__init__(agent_name="RouterAgent")
+        super().__init__(
+            agent_name="RouterAgent",
+            model_deployment_name=config.azure_ai_fast_model_deployment_name,
+        )
         self._dax_agent = dax_agent
         self._visual_creator_agent = visual_creator_agent
 

@@ -6,6 +6,7 @@ from agent_framework import Agent
 from agent_framework._skills import SkillsProvider
 from pydantic import Field
 
+from ai.ai_config import config
 from ai.event_recorder import EventRecorder
 from ai.tools.execute_dax_query_tool import execute_dax_query_tool
 from ai.tools.inspect_data_model_tool import inspect_data_model_tool
@@ -56,7 +57,10 @@ class DaxAgent(BaseAgent):
     """Agent that specializes in translating natural language to DAX queries."""
 
     def __init__(self):
-        super().__init__(agent_name="DaxAgent")
+        super().__init__(
+            agent_name="DaxAgent",
+            model_deployment_name=config.azure_ai_deep_model_deployment_name,
+        )
         self._skills_provider = SkillsProvider(build_dax_skills_source())
 
     async def generate_dax_query(
