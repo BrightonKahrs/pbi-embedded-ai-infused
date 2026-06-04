@@ -66,32 +66,17 @@ const InlinePowerBIVisual: React.FC<InlinePowerBIVisualProps> = ({
 
       setFailed(false);
 
-      // Race the materialise + token fetch against a short timeout. The
-      // PBI authoring API often fails silently (the in-memory visual's
-      // setProperty calls 401 against the service), so we fall back to
-      // Recharts quickly rather than show a permanent "Loading…" pill.
-      const TIMEOUT_MS = 3000;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('inline-pbi-embed-timeout')), TIMEOUT_MS);
-      });
-
       try {
-        const materialised = await Promise.race([
-          (async () => {
-            const result = await createInlineVisualOnly(report, config, {
-              pageNamePrefix: 'AI_InlineChat',
-              layout: { x: 0, y: 0, width: 600, height: 320 },
-            });
-            if (!result) {
-              throw new Error('inline-pbi-materialise-aborted');
-            }
-            const pbiConfig = await apiService.getPowerBIConfig(result.visualId);
-            return { result, pbiConfig };
-          })(),
-          timeoutPromise,
-        ]);
+        const result = await createInlineVisualOnly(report, config, {
+          pageNamePrefix: 'AI_InlineChat',
+          layout: { x: 0, y: 0, width: 600, height: 320 },
+        });
+        if (!result) {
+          // Save failed (read-only report, etc.) — fall back to Recharts.
+          throw new Error('inline-pbi-save-failed');
+        }
+        const pbiConfig = await apiService.getPowerBIConfig(result.visualId);
 
-        const { result, pbiConfig } = materialised;
         const resolvedTokenType =
           pbiConfig.tokenType === 'Aad' ? models.TokenType.Aad : models.TokenType.Embed;
 
@@ -117,9 +102,9 @@ const InlinePowerBIVisual: React.FC<InlinePowerBIVisualProps> = ({
         onReady?.({ visualId: result.visualId, pageName: result.pageName });
       } catch (err: any) {
         if (cancelled) return;
-        // Quiet — falling back to Recharts is the expected outcome whenever
-        // the report isn't in authoring mode or the service rejects the
-        // in-memory visual's property writes.
+        // Quiet — falling back to Recharts is the expected outcome for any
+        // user that lacks edit permissions on the report (or for whom the
+        // service rejects the in-memory visual save).
         console.debug('InlinePowerBIVisual: falling back to Recharts', err);
         setFailed(true);
         onError?.(err instanceof Error ? err : new Error(String(err)));

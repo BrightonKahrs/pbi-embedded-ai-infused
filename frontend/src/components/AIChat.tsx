@@ -11,6 +11,8 @@ import {
 import { useAgentStreamContext } from '../contexts/AgentStreamContext';
 import { InlineVisualWire } from '../types/ag-ui';
 import InlinePowerBIVisual from './InlinePowerBIVisual';
+import MessageMarkdown from './MessageMarkdown';
+import { cleanupAIPages } from '../services/inlineVisualPinner';
 import './AIChat.css';
 
 export const GREETING =
@@ -246,6 +248,8 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
     return null;
   }
 
+  const isAssistant = message.role === 'assistant';
+
   return (
     <div className={`message ${message.role}`}>
       <div className="message-avatar">
@@ -254,7 +258,11 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
       <div className="message-content">
         {hasContent && (
           <div className="message-text">
-            {message.content}
+            {isAssistant ? (
+              <MessageMarkdown content={message.content} />
+            ) : (
+              message.content
+            )}
             {message.isStreaming && <span className="streaming-cursor">▍</span>}
           </div>
         )}
@@ -274,6 +282,7 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null
     inlineVisuals,
     reasoningBlocks,
     timelineItems,
+    visualExplanations,
     isRunning,
     error,
     sendMessage,
@@ -286,10 +295,21 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null
 
   const [inputValue, setInputValue] = useState('');
   const timelineEndRef = useRef<HTMLDivElement>(null);
+  const cleanupRanForReportRef = useRef<Report | null>(null);
 
   useEffect(() => {
     timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [timelineItems, messages, isRunning]);
+
+  // On first mount with an authoring-capable report, sweep any leftover
+  // AI_InlineChat_* pages from a previous chat session. Best-effort —
+  // failures are silent inside `cleanupAIPages`.
+  useEffect(() => {
+    if (!currentReport) return;
+    if (cleanupRanForReportRef.current === currentReport) return;
+    cleanupRanForReportRef.current = currentReport;
+    void cleanupAIPages(currentReport);
+  }, [currentReport]);
 
   const handlePin = async (messageId: string, visual: InlineVisual) => {
     if (!onAddInlineVisual) return;
@@ -363,6 +383,7 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null
         const pinKey = item.id;
         const pinned = pinnedMessages.has(pinKey);
         const pinError = pinErrors[pinKey];
+        const explanation = visualExplanations[item.visualIndex];
         return (
           <div key={item.id} className="timeline-visual-card">
             <InlinePowerBIVisual
@@ -380,6 +401,25 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null
                 style={{ marginTop: 6, fontSize: 12, color: '#b91c1c' }}
               >
                 Couldn't add: {pinError}
+              </div>
+            )}
+            {explanation && (
+              <div className="visual-explanation">
+                {explanation.content && (
+                  <MessageMarkdown
+                    content={explanation.content}
+                    className="visual-explanation-md"
+                  />
+                )}
+                {!explanation.complete && (
+                  <span
+                    className="visual-explanation-thinking"
+                    aria-live="polite"
+                  >
+                    <span className="activity-spinner" aria-hidden="true" />
+                    <span>Explaining…</span>
+                  </span>
+                )}
               </div>
             )}
           </div>

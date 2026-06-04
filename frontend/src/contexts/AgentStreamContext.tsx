@@ -25,6 +25,7 @@ import type {
   DeepToolCall,
   ReasoningBlock,
   TimelineItem,
+  VisualExplanation,
 } from "../hooks/useAgentStream";
 import type {
   InlineVisualWire,
@@ -42,6 +43,7 @@ export interface AgentStreamContextValue {
   inlineVisuals: InlineVisualWire[];
   reasoningBlocks: ReasoningBlock[];
   timelineItems: TimelineItem[];
+  visualExplanations: Record<number, VisualExplanation>;
   isRunning: boolean;
   error: string | null;
   sendMessage: (content: string) => void;

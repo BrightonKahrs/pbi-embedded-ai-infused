@@ -595,3 +595,169 @@
 .messages-container::-webkit-scrollbar-thumb:hover {
   background: #999;
 }
+
+/* === Markdown rendering (.ai-md) ============================================
+   ReactMarkdown output for assistant message bubbles. The wrapping bubble
+   already has white background + padding, so .ai-md just normalises block
+   spacing and adds compact table/code styling. */
+
+.ai-md {
+  font-size: 14px;
+  line-height: 1.5;
+  color: #1f2937;
+  /* override the .message-text `white-space: pre-wrap` ancestor — ReactMarkdown
+     emits proper block elements and shouldn't double-space text. */
+  white-space: normal;
+}
+
+.ai-md > :first-child {
+  margin-top: 0;
+}
+.ai-md > :last-child {
+  margin-bottom: 0;
+}
+
+.ai-md-h1,
+.ai-md-h2,
+.ai-md-h3,
+.ai-md-h4 {
+  margin: 12px 0 6px 0;
+  line-height: 1.3;
+  font-weight: 600;
+  color: #0f172a;
+}
+.ai-md-h1 { font-size: 16px; }
+.ai-md-h2 { font-size: 15px; }
+.ai-md-h3 { font-size: 14px; }
+.ai-md-h4 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: #475569; }
+
+.ai-md a {
+  color: #4338ca;
+  text-decoration: underline;
+}
+.ai-md a:hover {
+  color: #312e81;
+}
+
+.ai-md-ul,
+.ai-md-ol {
+  margin: 0 0 8px 0;
+  padding-left: 22px;
+}
+.ai-md-li {
+  margin: 0 0 2px 0;
+}
+
+.ai-md-blockquote {
+  margin: 0 0 8px 0;
+  padding: 4px 10px;
+  border-left: 3px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+  font-style: italic;
+}
+
+.ai-md-hr {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 10px 0;
+}
+
+.ai-md-code-inline {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  background: rgba(15, 23, 42, 0.07);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: #0f172a;
+}
+
+.ai-md-pre {
+  margin: 6px 0 8px 0;
+  padding: 10px 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+.ai-md-pre .ai-md-code-block,
+.ai-md-pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+}
+
+.ai-md-table-wrap {
+  overflow-x: auto;
+  margin: 4px 0 10px 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+.ai-md-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12.5px;
+  background: white;
+}
+.ai-md-thead {
+  background: #f1f5f9;
+}
+.ai-md-th {
+  text-align: left;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-bottom: 1px solid #e2e8f0;
+  color: #0f172a;
+  white-space: nowrap;
+}
+.ai-md-td {
+  padding: 5px 10px;
+  border-top: 1px solid #f1f5f9;
+  color: #1f2937;
+  vertical-align: top;
+}
+.ai-md-tr:nth-child(even) .ai-md-td {
+  background: #fafbfc;
+}
+
+/* User bubbles never go through the markdown renderer, but make sure the
+   chat-wide overrides remain dark-on-purple just in case. */
+.message.user .message-text {
+  color: white;
+}
+
+/* --- Per-visual streaming explanation -------------------------------------
+   Rendered directly under the InlinePowerBIVisual card; styled as a muted,
+   italic-ish paragraph so it doesn't visually compete with the chart. */
+.visual-explanation {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(99, 102, 241, 0.05);
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  border-radius: 6px;
+  color: #334155;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.visual-explanation-md {
+  font-style: italic;
+}
+.visual-explanation-md p {
+  margin: 0 0 6px 0;
+}
+.visual-explanation-md > :last-child {
+  margin-bottom: 0;
+}
+.visual-explanation-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #6366f1;
+  font-style: italic;
+}
