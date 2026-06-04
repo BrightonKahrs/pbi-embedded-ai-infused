@@ -1,9 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { apiService, InlineVisual, VisualConfig } from '../services/api';
-import { useAgentStream, StreamChatMessage } from '../hooks/useAgentStream';
-import { InlineVisualWire } from '../types/ag-ui';
+import { useAgentStream, StreamChatMessage, ToolCall } from '../hooks/useAgentStream';
+import {
+  AGUIEvent,
+  AGUIEventType,
+  AgentHandoffPayload,
+  InlineVisualWire,
+  TimestampedEvent,
+} from '../types/ag-ui';
 import InlineChart from './InlineChart';
-import ExplainabilityPanel from './ExplainabilityPanel';
 import './AIChat.css';
 
 const GREETING = "Hello! I'm your AI assistant for Power BI analytics. How can I help you today?";
@@ -14,8 +19,6 @@ interface AIChatProps {
 
 /** Convert the wire-shape visual (from CUSTOM "InlineVisuals" events) into
  * the InlineVisual structure the existing InlineChart component expects.
- * The config payload is shaped exactly like our pydantic `VisualConfig`
- * so the cast is safe — we just give TS a typed view.
  */
 function toInlineVisual(wire: InlineVisualWire): InlineVisual {
   return {
@@ -24,12 +27,264 @@ function toInlineVisual(wire: InlineVisualWire): InlineVisual {
   };
 }
 
+// --- Timeline item model ---------------------------------------------------
+//
+// The chat is a single timeline of three kinds of items, sorted by arrival
+// time:
+//   - message  : the user's input or the assistant's streaming answer bubble
+//   - activity : a small inline card representing a single AG-UI event
+//   - error    : a red activity card for RUN_ERROR
+//
+// `ts` is the wall-clock time we received the item so the timeline stays
+// strictly chronological even when events and messages interleave.
+
+type TimelineItem =
+  | { kind: 'message'; ts: number; key: string; message: StreamChatMessage }
+  | { kind: 'activity'; ts: number; key: string; event: TimestampedEvent };
+
+/** Events we render as their own inline activity card. Anything that is
+ * already represented by a bubble (TEXT_MESSAGE_*) or rolled up into a
+ * tool-call chip (TOOL_CALL_ARGS/END/RESULT) is filtered out.
+ */
+function isRenderableActivity(event: AGUIEvent): boolean {
+  switch (event.type) {
+    case AGUIEventType.RUN_STARTED:
+    case AGUIEventType.RUN_FINISHED:
+    case AGUIEventType.RUN_ERROR:
+    case AGUIEventType.STEP_STARTED:
+    case AGUIEventType.STEP_FINISHED:
+    case AGUIEventType.TOOL_CALL_START:
+    case AGUIEventType.REASONING_START:
+    case AGUIEventType.CUSTOM:
+      return true;
+    default:
+      return false;
+  }
+}
+
+function shortenArgs(args: string, max = 60): string {
+  const trimmed = args.trim();
+  if (!trimmed) return '';
+  // Try to parse JSON so we can render `{key: value}` compactly.
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object') {
+      const entries = Object.entries(parsed)
+        .map(([k, v]) => {
+          let val = typeof v === 'string' ? v : JSON.stringify(v);
+          if (val.length > 30) val = val.slice(0, 30) + '…';
+          return `${k}=${val}`;
+        })
+        .join(', ');
+      return entries.length > max ? entries.slice(0, max) + '…' : entries;
+    }
+  } catch {
+    // not JSON yet (streaming) — fall through
+  }
+  return trimmed.length > max ? trimmed.slice(0, max) + '…' : trimmed;
+}
+
+function shortenResult(result: string | undefined, max = 120): string {
+  if (!result) return '';
+  const r = result.trim();
+  return r.length > max ? r.slice(0, max) + '…' : r;
+}
+
+// --- Activity card --------------------------------------------------------
+
+interface ActivityCardProps {
+  event: TimestampedEvent;
+  toolCalls: ToolCall[];
+  reasoningBlocks: Record<string, string>;
+}
+
+const ActivityCard: React.FC<ActivityCardProps> = ({ event, toolCalls, reasoningBlocks }) => {
+  const [open, setOpen] = useState(false);
+  const e = event.event;
+
+  // --- RUN_* timeline markers ---
+  if (e.type === AGUIEventType.RUN_STARTED) {
+    return (
+      <div className="activity activity-run-marker activity-run-started">
+        <span className="activity-dot" />
+        <span>Run started</span>
+      </div>
+    );
+  }
+  if (e.type === AGUIEventType.RUN_FINISHED) {
+    return (
+      <div className="activity activity-run-marker activity-run-finished">
+        <span className="activity-dot activity-dot-done" />
+        <span>Done</span>
+      </div>
+    );
+  }
+  if (e.type === AGUIEventType.RUN_ERROR) {
+    return (
+      <div className="activity activity-error">
+        <span className="activity-icon">❌</span>
+        <span className="activity-text">{e.message || 'Run failed'}</span>
+      </div>
+    );
+  }
+
+  // --- STEP_* small chip ---
+  if (e.type === AGUIEventType.STEP_STARTED) {
+    return (
+      <div className="activity activity-step">
+        <span className="activity-icon">▶</span>
+        <span className="activity-text">{e.stepName}</span>
+      </div>
+    );
+  }
+  if (e.type === AGUIEventType.STEP_FINISHED) {
+    return (
+      <div className="activity activity-step activity-step-finished">
+        <span className="activity-icon">▣</span>
+        <span className="activity-text">{e.stepName}</span>
+      </div>
+    );
+  }
+
+  // --- CUSTOM events ---
+  if (e.type === AGUIEventType.CUSTOM) {
+    if (e.name === 'AgentHandoff') {
+      const v = (e.value ?? {}) as AgentHandoffPayload;
+      return (
+        <div className="activity activity-handoff" role="status">
+          <div className="activity-handoff-title">
+            <span className="activity-icon">✨</span>
+            <span>
+              Routed to <strong>Deep Analysis Agent</strong>
+            </span>
+          </div>
+          {v.reason && <div className="activity-handoff-reason">{v.reason}</div>}
+        </div>
+      );
+    }
+    if (e.name === 'InlineVisuals') {
+      // InlineVisuals are attached to the assistant message bubble, so
+      // we keep the activity card minimal — just a "visuals ready" note.
+      const visuals =
+        e.value && typeof e.value === 'object' && 'visuals' in (e.value as any)
+          ? ((e.value as any).visuals as unknown[]) ?? []
+          : [];
+      return (
+        <div className="activity activity-custom">
+          <span className="activity-icon">📊</span>
+          <span className="activity-text">
+            Inline visual{visuals.length === 1 ? '' : 's'} ready ({visuals.length})
+          </span>
+        </div>
+      );
+    }
+    return (
+      <div className="activity activity-custom">
+        <span className="activity-icon">✨</span>
+        <span className="activity-text">{e.name}</span>
+      </div>
+    );
+  }
+
+  // --- TOOL_CALL_START → rich chip backed by toolCalls state ---
+  if (e.type === AGUIEventType.TOOL_CALL_START) {
+    const tc = toolCalls.find((t) => t.id === e.toolCallId);
+    const status: 'calling' | 'complete' | 'error' = tc?.status ?? 'calling';
+    const argsPreview = tc ? shortenArgs(tc.args) : '';
+    const resultPreview = tc?.result ? shortenResult(tc.result) : '';
+    const isDone = status === 'complete';
+    return (
+      <div className={`activity activity-tool ${isDone ? 'activity-tool-done' : ''}`}>
+        <button
+          type="button"
+          className="activity-tool-head"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+        >
+          <span className="activity-icon">
+            {isDone ? '✅' : <span className="activity-spinner" aria-hidden="true" />}
+          </span>
+          <span className="activity-text">
+            <span className="activity-tool-verb">{isDone ? 'tool' : 'Calling tool'}</span>{' '}
+            <code>{e.toolCallName}</code>
+            {argsPreview && (
+              <span className="activity-tool-args">({argsPreview})</span>
+            )}
+            {isDone && resultPreview && (
+              <span className="activity-tool-result"> → {resultPreview}</span>
+            )}
+          </span>
+          {(tc?.args || tc?.result) && (
+            <span className="activity-chev">{open ? '▾' : '▸'}</span>
+          )}
+        </button>
+        {open && (
+          <div className="activity-tool-detail">
+            {tc?.args && (
+              <>
+                <div className="activity-detail-label">arguments</div>
+                <pre className="activity-detail-pre">{tc.args}</pre>
+              </>
+            )}
+            {tc?.result && (
+              <>
+                <div className="activity-detail-label">result</div>
+                <pre className="activity-detail-pre">{tc.result}</pre>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // --- REASONING_START → collapsible thinking card ---
+  if (e.type === AGUIEventType.REASONING_START) {
+    const content = (e.messageId && reasoningBlocks[e.messageId]) || '';
+    const preview = content.replace(/\s+/g, ' ').trim().slice(0, 80);
+    const hasMore = content.length > 80;
+    return (
+      <div className="activity activity-reasoning">
+        <button
+          type="button"
+          className="activity-reasoning-head"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+        >
+          <span className="activity-icon">🧠</span>
+          <span className="activity-text">
+            <span className="activity-reasoning-verb">Thinking…</span>{' '}
+            {preview ? (
+              <span className="activity-reasoning-preview">
+                {preview}
+                {hasMore ? '…' : ''}
+              </span>
+            ) : (
+              <span className="activity-reasoning-preview activity-muted">
+                (reasoning in progress)
+              </span>
+            )}
+          </span>
+          {content && <span className="activity-chev">{open ? '▾' : '▸'}</span>}
+        </button>
+        {open && content && (
+          <pre className="activity-detail-pre">{content}</pre>
+        )}
+      </div>
+    );
+  }
+
+  return null;
+};
+
+// --- Main component -------------------------------------------------------
+
 const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual }) => {
   const {
     messages,
     events,
     toolCalls,
-    routingEvents,
+    reasoningBlocks,
     isRunning,
     error,
     sendMessage,
@@ -37,25 +292,47 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual }) => {
   } = useAgentStream({ initialAssistantGreeting: GREETING });
 
   const [inputValue, setInputValue] = useState('');
-  const [explainOpen, setExplainOpen] = useState(false);
   const [pinnedMessages, setPinnedMessages] = useState<Set<string>>(new Set());
   const [pinErrors, setPinErrors] = useState<Record<string, string>>({});
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const timelineEndRef = useRef<HTMLDivElement>(null);
+
+  // Merge messages + activity events into one chronologically-sorted
+  // timeline. We sort by `ts` then break ties by item kind so that a
+  // RUN_STARTED activity logged at the same ms as the user message
+  // still falls just after it.
+  const timeline: TimelineItem[] = useMemo(() => {
+    const items: TimelineItem[] = [];
+    for (const m of messages) {
+      items.push({ kind: 'message', ts: m.ts, key: `msg-${m.id}`, message: m });
+    }
+    for (const ev of events) {
+      if (!isRenderableActivity(ev.event)) continue;
+      items.push({ kind: 'activity', ts: ev.timestamp, key: `act-${ev.id}`, event: ev });
+    }
+    items.sort((a, b) => {
+      if (a.ts !== b.ts) return a.ts - b.ts;
+      // Stable secondary sort: messages before activity at same ms feels
+      // more natural ("user said X, then AI started reasoning").
+      if (a.kind !== b.kind) return a.kind === 'message' ? -1 : 1;
+      return a.key < b.key ? -1 : 1;
+    });
+    return items;
+  }, [messages, events]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, toolCalls]);
+    timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [timeline, isRunning]);
 
   const handlePin = async (messageId: string, visual: InlineVisual) => {
     if (!onAddInlineVisual) return;
     try {
       await onAddInlineVisual(visual);
-      setPinnedMessages(prev => {
+      setPinnedMessages((prev) => {
         const next = new Set(prev);
         next.add(messageId);
         return next;
       });
-      setPinErrors(prev => {
+      setPinErrors((prev) => {
         if (!prev[messageId]) return prev;
         const next = { ...prev };
         delete next[messageId];
@@ -63,7 +340,7 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual }) => {
       });
     } catch (err: any) {
       const msg = err?.message || String(err);
-      setPinErrors(prev => ({ ...prev, [messageId]: msg }));
+      setPinErrors((prev) => ({ ...prev, [messageId]: msg }));
     }
   };
 
@@ -79,37 +356,23 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual }) => {
     try {
       await apiService.clearChatHistory();
     } catch {
-      // Non-fatal — the streaming endpoint is stateless, but the
-      // legacy /api/chat history still lives on the server. Best effort.
+      // Non-fatal — streaming endpoint is stateless; legacy history is best-effort.
     }
     clear();
     setPinnedMessages(new Set());
     setPinErrors({});
   };
 
-  // Map tool-call id → tool call so we can render running chips beneath
-  // the currently-streaming assistant bubble.
-  const liveToolCalls = useMemo(
-    () => toolCalls.filter(tc => tc.status !== 'complete'),
-    [toolCalls]
-  );
-
   const renderMessage = (message: StreamChatMessage) => {
     const hasCharts = !!(message.visuals && message.visuals.length > 0);
     const pinned = pinnedMessages.has(message.id);
     const pinError = pinErrors[message.id];
     return (
-      <div key={message.id} className={`message ${message.role}`}>
+      <div className={`message ${message.role}`}>
         <div className="message-avatar">
           {message.role === 'user' ? '👤' : '🤖'}
         </div>
         <div className={`message-content${hasCharts ? ' has-charts' : ''}`}>
-          {message.handoff && (
-            <div className="agent-handoff-banner" title={message.handoff.reason}>
-              ✨ Routed to <strong>Deep Analysis Agent</strong>
-              <span className="agent-handoff-reason"> — {message.handoff.reason}</span>
-            </div>
-          )}
           <div className="message-text">
             {message.content}
             {message.isStreaming && <span className="streaming-cursor">▍</span>}
@@ -148,79 +411,47 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual }) => {
 
   return (
     <div className="ai-chat-container">
-      <div className="chat-header">
-        <h3>💬 AI Assistant</h3>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {routingEvents.length > 0 && (
-            <span
-              className="agent-handoff-chip"
-              title={`${routingEvents.length} handoff${routingEvents.length === 1 ? '' : 's'} this session`}
-            >
-              ✨ Deep Analysis × {routingEvents.length}
-            </span>
-          )}
-          <button
-            onClick={() => setExplainOpen(true)}
-            className="clear-button"
-            title="Inspect live agent events"
-          >
-            🧠 Explain
-          </button>
-          <button
-            onClick={handleClearChat}
-            className="clear-button"
-            title="Clear conversation"
-          >
-            🗑️ Clear
-          </button>
-        </div>
-      </div>
-
       <div className="messages-container">
-        {messages.map(renderMessage)}
-
-        {isRunning && liveToolCalls.length > 0 && (
-          <div className="message assistant">
-            <div className="message-avatar">🛠️</div>
-            <div className="message-content">
-              {liveToolCalls.map(tc => (
-                <div key={tc.id} className="tool-call-chip">
-                  <span className="tool-call-name">{tc.name}</span>
-                  <span className="tool-call-status">{tc.status}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {isRunning && liveToolCalls.length === 0 && messages[messages.length - 1]?.role === 'user' && (
-          <div className="message assistant">
-            <div className="message-avatar">🤖</div>
-            <div className="message-content">
-              <div className="typing-indicator">
-                <span></span>
-                <span></span>
-                <span></span>
-              </div>
-            </div>
-          </div>
+        {timeline.map((item) =>
+          item.kind === 'message' ? (
+            <React.Fragment key={item.key}>{renderMessage(item.message)}</React.Fragment>
+          ) : (
+            <ActivityCard
+              key={item.key}
+              event={item.event}
+              toolCalls={toolCalls}
+              reasoningBlocks={reasoningBlocks}
+            />
+          )
         )}
 
         {error && (
-          <div className="message assistant">
-            <div className="message-avatar">⚠️</div>
-            <div className="message-content">
-              <div className="message-text" style={{ color: '#b91c1c' }}>
-                {error}
-              </div>
-            </div>
+          <div className="activity activity-error">
+            <span className="activity-icon">⚠️</span>
+            <span className="activity-text">{error}</span>
           </div>
         )}
 
-        <div ref={messagesEndRef} />
+        {isRunning && (
+          <div className="activity activity-pulse" aria-live="polite">
+            <span className="activity-pulse-dot" />
+            <span className="activity-text">AI is working…</span>
+          </div>
+        )}
+
+        <div ref={timelineEndRef} />
       </div>
 
       <form onSubmit={handleSendMessage} className="input-container">
+        <button
+          type="button"
+          onClick={handleClearChat}
+          className="composer-clear-button"
+          title="Clear conversation"
+          disabled={isRunning}
+        >
+          🗑️
+        </button>
         <input
           type="text"
           value={inputValue}
@@ -237,12 +468,6 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual }) => {
           ➤
         </button>
       </form>
-
-      <ExplainabilityPanel
-        events={events}
-        isOpen={explainOpen}
-        onClose={() => setExplainOpen(false)}
-      />
     </div>
   );
 };

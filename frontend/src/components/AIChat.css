@@ -8,37 +8,6 @@
   overflow: hidden;
 }
 
-.chat-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 20px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.chat-header h3 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-}
-
-.clear-button {
-  background: rgba(255, 255, 255, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  color: white;
-  padding: 6px 12px;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 13px;
-  transition: all 0.3s;
-}
-
-.clear-button:hover {
-  background: rgba(255, 255, 255, 0.3);
-}
-
 .messages-container {
   flex: 1;
   overflow-y: auto;
@@ -195,40 +164,6 @@
 
 /* === AG-UI streaming additions === */
 
-.agent-handoff-banner {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 6px 10px;
-  margin-bottom: 8px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, rgba(168, 85, 247, 0.12), rgba(99, 102, 241, 0.12));
-  border: 1px solid rgba(168, 85, 247, 0.35);
-  font-size: 12px;
-  color: #4c1d95;
-}
-
-.agent-handoff-banner strong {
-  font-weight: 700;
-}
-
-.agent-handoff-reason {
-  font-style: italic;
-  color: #6b21a8;
-}
-
-.agent-handoff-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  background: rgba(255, 255, 255, 0.85);
-  color: #4c1d95;
-  border: 1px solid rgba(255, 255, 255, 0.4);
-}
-
 .streaming-cursor {
   display: inline-block;
   margin-left: 2px;
@@ -240,29 +175,281 @@
   to { visibility: hidden; }
 }
 
-.tool-call-chip {
-  display: inline-flex;
-  align-items: center;
+/* --- Inline activity cards (timeline events) --- */
+.activity {
+  display: flex;
+  align-items: flex-start;
   gap: 8px;
-  padding: 6px 10px;
-  margin: 2px 6px 2px 0;
-  border-radius: 999px;
-  background: rgba(180, 83, 9, 0.1);
-  border: 1px solid rgba(180, 83, 9, 0.3);
   font-size: 12px;
-  color: #92400e;
+  color: #475569;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  align-self: stretch;
+  max-width: 95%;
+  animation: fadeIn 0.25s ease-in;
 }
 
-.tool-call-chip .tool-call-name {
+.activity-icon {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.activity-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.activity-text code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-weight: 600;
+  font-size: 11px;
+  background: rgba(15, 23, 42, 0.08);
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 
-.tool-call-chip .tool-call-status {
+.activity-chev {
+  font-size: 10px;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.activity-detail-pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.activity-detail-label {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  opacity: 0.75;
+  margin-top: 6px;
+  color: #64748b;
+}
+
+/* RUN markers — small pill, very subdued */
+.activity-run-marker {
+  align-self: center;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+}
+.activity-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+.activity-dot-done {
+  background: #10b981;
+}
+
+/* STEP chips — narrow inline tag */
+.activity-step {
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.25);
+  color: #1e40af;
+  align-self: flex-start;
+  max-width: max-content;
+}
+.activity-step-finished {
+  opacity: 0.6;
+}
+
+/* TOOL_CALL activity card */
+.activity-tool {
+  background: rgba(180, 83, 9, 0.08);
+  border-color: rgba(180, 83, 9, 0.25);
+  color: #92400e;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+}
+.activity-tool-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font-size: inherit;
+}
+.activity-tool-verb {
+  font-weight: 600;
+}
+.activity-tool-args {
+  opacity: 0.85;
+  margin-left: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.activity-tool-result {
+  margin-left: 4px;
+  color: #166534;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.activity-tool-detail {
+  padding: 0 10px 8px;
+}
+.activity-tool-done {
+  background: rgba(16, 185, 129, 0.07);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #065f46;
+}
+
+/* Spinner used while a tool is still running */
+.activity-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid rgba(180, 83, 9, 0.25);
+  border-top-color: #b45309;
+  animation: activity-spin 0.8s linear infinite;
+}
+@keyframes activity-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* CUSTOM AgentHandoff — purple banner */
+.activity-handoff {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.12), rgba(99, 102, 241, 0.12));
+  border-color: rgba(168, 85, 247, 0.35);
+  color: #4c1d95;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+.activity-handoff-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.activity-handoff-reason {
+  font-style: italic;
+  color: #6b21a8;
+  font-size: 11px;
+  padding-left: 24px;
+}
+
+/* Other CUSTOM events */
+.activity-custom {
+  background: rgba(168, 85, 247, 0.07);
+  border-color: rgba(168, 85, 247, 0.2);
+  color: #6b21a8;
+}
+
+/* REASONING card */
+.activity-reasoning {
+  background: rgba(99, 102, 241, 0.07);
+  border-color: rgba(99, 102, 241, 0.22);
+  color: #3730a3;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+}
+.activity-reasoning-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font-size: inherit;
+}
+.activity-reasoning-verb {
+  font-weight: 600;
+}
+.activity-reasoning-preview {
+  font-style: italic;
+  opacity: 0.9;
+}
+.activity-muted {
+  opacity: 0.6;
+}
+
+/* Errors */
+.activity-error {
+  background: rgba(220, 38, 38, 0.08);
+  border-color: rgba(220, 38, 38, 0.3);
+  color: #991b1b;
+}
+
+/* "AI is working..." pulse at bottom while isRunning */
+.activity-pulse {
+  align-self: center;
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-style: italic;
+}
+.activity-pulse-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #667eea;
+  animation: activity-pulse 1.2s ease-in-out infinite;
+}
+@keyframes activity-pulse {
+  0%, 100% { transform: scale(0.7); opacity: 0.5; }
+  50% { transform: scale(1.1); opacity: 1; }
+}
+
+/* Composer clear button (moved out of header) */
+.composer-clear-button {
+  background: transparent;
+  border: 1px solid #e2e8f0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 14px;
+  color: #64748b;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.composer-clear-button:hover:not(:disabled) {
+  background: #f1f5f9;
+  color: #1e293b;
+}
+.composer-clear-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .send-button:hover:not(:disabled) {
@@ -292,6 +479,3 @@
 .messages-container::-webkit-scrollbar-thumb:hover {
   background: #999;
 }
-
-/* === AG-UI streaming additions === */
-

@@ -36,8 +36,9 @@ export interface StreamChatMessage {
   isStreaming?: boolean;
   /** Inline visuals attached to this assistant message (assistant only). */
   visuals?: InlineVisualWire[];
-  /** Optional handoff annotation rendered as a banner above the bubble. */
-  handoff?: AgentHandoffPayload;
+  /** Insertion timestamp — used to interleave messages with activity events
+   * into a single chat timeline. */
+  ts: number;
   order: number;
 }
 
@@ -62,6 +63,11 @@ interface UseAgentStreamReturn {
   toolCalls: ToolCall[];
   routingEvents: RoutingEvent[];
   inlineVisuals: InlineVisualWire[];
+  /** Accumulated reasoning content per reasoning messageId — REASONING
+   * events arrive as many small content deltas; we merge them here so
+   * the UI can render one card per reasoning block.
+   */
+  reasoningBlocks: Record<string, string>;
   isRunning: boolean;
   error: string | null;
   sendMessage: (content: string) => void;
@@ -92,6 +98,7 @@ export function useAgentStream(
             role: "assistant",
             content: initialGreeting,
             order: 0,
+            ts: Date.now(),
           },
         ]
       : []
@@ -100,6 +107,7 @@ export function useAgentStream(
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
   const [routingEvents, setRoutingEvents] = useState<RoutingEvent[]>([]);
   const [inlineVisuals, setInlineVisuals] = useState<InlineVisualWire[]>([]);
+  const [reasoningBlocks, setReasoningBlocks] = useState<Record<string, string>>({});
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -108,12 +116,10 @@ export function useAgentStream(
   const orderCounterRef = useRef(initialGreeting ? 1 : 0);
   const conversationRef = useRef<AGUIMessage[]>([]);
   // Most-recent assistant message id (set on TEXT_MESSAGE_START). Used so
-  // we can attach handoff + visual annotations to the right bubble.
+  // we can attach inline visuals to the right bubble.
   const lastAssistantIdRef = useRef<string | null>(null);
-  // Pending handoff to attach to the next assistant text bubble. Holds the
-  // most recent payload so a single routed turn shows exactly one banner.
-  const pendingHandoffRef = useRef<AgentHandoffPayload | null>(null);
-  // Visuals to attach to the next assistant text bubble (same idea).
+  // Visuals queued from a CUSTOM "InlineVisuals" event that arrived
+  // before the matching assistant text-message bubble exists yet.
   const pendingVisualsRef = useRef<InlineVisualWire[]>([]);
 
   const pushEvent = useCallback((event: AGUIEvent) => {
@@ -136,9 +142,7 @@ export function useAgentStream(
         case AGUIEventType.TEXT_MESSAGE_START: {
           lastAssistantIdRef.current = event.messageId;
           const order = orderCounterRef.current++;
-          const handoff = pendingHandoffRef.current;
           const visuals = pendingVisualsRef.current;
-          pendingHandoffRef.current = null;
           pendingVisualsRef.current = [];
           setMessages((prev) => [
             ...prev,
@@ -147,9 +151,9 @@ export function useAgentStream(
               role: "assistant",
               content: "",
               isStreaming: true,
-              handoff: handoff ?? undefined,
               visuals: visuals.length > 0 ? visuals : undefined,
               order,
+              ts: Date.now(),
             },
           ]);
           break;
@@ -174,23 +178,18 @@ export function useAgentStream(
                   content: m.content,
                 });
               }
-              // Any visuals/handoff that arrived AFTER text end (the
-              // router tool runs to completion after the model already
-              // started streaming "the answer is…") still belong on
-              // this bubble.
+              // Any visuals that arrived AFTER text end (the router tool
+              // runs to completion after the model already started
+              // streaming) still belong on this bubble.
               const pendingVisuals = pendingVisualsRef.current;
-              const pendingHandoff = pendingHandoffRef.current;
               const nextVisuals = pendingVisuals.length
                 ? [...(m.visuals ?? []), ...pendingVisuals]
                 : m.visuals;
               if (pendingVisuals.length) pendingVisualsRef.current = [];
-              const nextHandoff = m.handoff ?? pendingHandoff ?? undefined;
-              if (pendingHandoff && !m.handoff) pendingHandoffRef.current = null;
               return {
                 ...m,
                 isStreaming: false,
                 visuals: nextVisuals,
-                handoff: nextHandoff,
               };
             })
           );
@@ -236,20 +235,6 @@ export function useAgentStream(
             const payload = event.value as AgentHandoffPayload;
             const routing: RoutingEvent = { ...payload, ts: Date.now() };
             setRoutingEvents((prev) => [...prev, routing]);
-            // Attach to the current assistant bubble if one already
-            // exists, otherwise queue for the next TEXT_MESSAGE_START.
-            const currentId = lastAssistantIdRef.current;
-            if (currentId) {
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === currentId && m.role === "assistant"
-                    ? { ...m, handoff: m.handoff ?? payload }
-                    : m
-                )
-              );
-            } else {
-              pendingHandoffRef.current = payload;
-            }
           } else if (event.name === "InlineVisuals" && event.value) {
             const payload = event.value as InlineVisualsPayload;
             const visuals = Array.isArray(payload?.visuals) ? payload.visuals : [];
@@ -270,6 +255,25 @@ export function useAgentStream(
                 ...visuals,
               ];
             }
+          }
+          break;
+        }
+        case AGUIEventType.REASONING_START: {
+          if (event.messageId) {
+            setReasoningBlocks((prev) => ({
+              ...prev,
+              [event.messageId as string]: prev[event.messageId as string] ?? "",
+            }));
+          }
+          break;
+        }
+        case AGUIEventType.REASONING_MESSAGE_CONTENT: {
+          if (event.messageId) {
+            const id = event.messageId;
+            setReasoningBlocks((prev) => ({
+              ...prev,
+              [id]: (prev[id] ?? "") + (event.delta ?? ""),
+            }));
           }
           break;
         }
@@ -318,7 +322,6 @@ export function useAgentStream(
       setError(null);
       setIsRunning(true);
       lastAssistantIdRef.current = null;
-      pendingHandoffRef.current = null;
       pendingVisualsRef.current = [];
 
       const userMsg: StreamChatMessage = {
@@ -326,6 +329,7 @@ export function useAgentStream(
         role: "user",
         content,
         order: orderCounterRef.current++,
+        ts: Date.now(),
       };
       setMessages((prev) => [...prev, userMsg]);
       conversationRef.current.push({ role: "user", content });
@@ -353,6 +357,7 @@ export function useAgentStream(
               role: "assistant",
               content: initialGreeting,
               order: 0,
+              ts: Date.now(),
             },
           ]
         : []
@@ -361,10 +366,10 @@ export function useAgentStream(
     setToolCalls([]);
     setRoutingEvents([]);
     setInlineVisuals([]);
+    setReasoningBlocks({});
     setError(null);
     conversationRef.current = [];
     lastAssistantIdRef.current = null;
-    pendingHandoffRef.current = null;
     pendingVisualsRef.current = [];
     orderCounterRef.current = initialGreeting ? 1 : 0;
   }, [cancelRun, initialGreeting]);
@@ -375,6 +380,7 @@ export function useAgentStream(
     toolCalls,
     routingEvents,
     inlineVisuals,
+    reasoningBlocks,
     isRunning,
     error,
     sendMessage,
