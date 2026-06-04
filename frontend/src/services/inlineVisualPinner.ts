@@ -36,6 +36,13 @@ export interface MaterializeOptions {
   pageNamePrefix?: string;
   /** Partial layout overrides merged onto the default `VISUAL_LAYOUT`. */
   layout?: Partial<typeof VISUAL_LAYOUT>;
+  /** When true, the first `setProperty` failure aborts the whole flow and
+   *  the function resolves to `null`. Used by the inline preview path —
+   *  property writes 401 against the service for in-memory visuals, so
+   *  there's no point continuing to try every property. The pin-to-widgets
+   *  path leaves this false (default) so a missing decorative property
+   *  doesn't kill an otherwise successful pin. */
+  abortOnPropertyFailure?: boolean;
 }
 
 /**
@@ -71,27 +78,28 @@ function rethrowWithContext(phase: string, error: unknown): never {
 
 /**
  * Shared internals for both `pinInlineVisualToReport` (pin + save) and
- * `createInlineVisualOnly` (in-memory only). Creates a fresh page, materialises
- * the visual on it, binds data fields, and sets title/display properties.
+ * `createInlineVisualOnly` (in-memory only). Creates a fresh page,
+ * materialises the visual on it, binds data fields, and sets
+ * title/display properties.
  *
- * The flow mirrors `AuthorVisualAIView`'s `createNewPageForVisual` +
- * `applyVisualConfig`. Power BI's authoring API is finicky so we deliberately
- * copy the known-good sequence rather than reinvent it.
+ * Returns `null` when `abortOnPropertyFailure` is set and a `setProperty`
+ * call rejected — the caller should fall back to its own renderer.
  */
 async function _materializeVisual(
   report: Report,
   config: VisualConfig,
   opts: MaterializeOptions = {}
-): Promise<PinResult> {
+): Promise<PinResult | null> {
   const prefix = opts.pageNamePrefix ?? 'AI_Inline';
   const newPageName = `${prefix}_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   const layout = { ...VISUAL_LAYOUT, ...(opts.layout ?? {}) };
+  const abortOnPropertyFailure = !!opts.abortOnPropertyFailure;
 
   // 1. Create a fresh page to host the visual.
   try {
     await report.addPage(newPageName);
   } catch (error) {
-    console.error('inlineVisualPinner: failed to add page', error);
+    console.debug('inlineVisualPinner: failed to add page', error);
     rethrowWithContext(
       'could not add new page (the report must be embedded in Edit mode to author visuals)',
       error
@@ -109,7 +117,7 @@ async function _materializeVisual(
   try {
     await newPage.setActive();
   } catch (error) {
-    console.warn('inlineVisualPinner: could not set new page active', error);
+    console.debug('inlineVisualPinner: could not set new page active', error);
   }
 
   // 2. Create the visual on the new page.
@@ -120,7 +128,7 @@ async function _materializeVisual(
       layout
     );
   } catch (error) {
-    console.error('inlineVisualPinner: createVisual failed', error);
+    console.debug('inlineVisualPinner: createVisual failed', error);
     rethrowWithContext(`could not create ${config.visualType} visual`, error);
   }
   const visual = visualResponse.visual;
@@ -138,73 +146,73 @@ async function _materializeVisual(
         schema: isMeasure ? schemas.measure : schemas.column,
       });
     } catch (fieldError) {
-      console.warn(
+      console.debug(
         `inlineVisualPinner: failed to add field ${field.dataRole} (${field.table}[${field.column}])`,
         fieldError
       );
     }
   }
 
-  // 4. Title (one try/catch per property so a single failure doesn't abort).
+  // 4-5. Properties (title + display). In the inline-preview path these
+  // 401 against the service because the visual is in-memory only, so we
+  // wrap the whole batch in a single try/catch and bail out on the first
+  // failure rather than spamming the console with one warning per property.
+  type PropertySpec = {
+    objectName: string;
+    propertyName: string;
+    value: unknown;
+  };
+  const propertySpecs: PropertySpec[] = [];
   if (config.title) {
-    try {
-      await visual.setProperty(
-        { objectName: 'title', propertyName: 'show' },
-        { schema: schemas.property, value: true }
-      );
-    } catch (err) {
-      console.warn('inlineVisualPinner: failed to set title.show', err);
+    propertySpecs.push(
+      { objectName: 'title', propertyName: 'show', value: true },
+      { objectName: 'title', propertyName: 'text', value: config.title },
+      { objectName: 'title', propertyName: 'textSize', value: 25 }
+    );
+  }
+  if (config.properties) {
+    if (config.properties.showLegend !== undefined) {
+      propertySpecs.push({
+        objectName: 'legend',
+        propertyName: 'show',
+        value: config.properties.showLegend,
+      });
     }
-    try {
-      await visual.setProperty(
-        { objectName: 'title', propertyName: 'text' },
-        { schema: schemas.property, value: config.title }
-      );
-    } catch (err) {
-      console.warn('inlineVisualPinner: failed to set title.text', err);
+    if (config.properties.showXAxis !== undefined) {
+      propertySpecs.push({
+        objectName: 'categoryAxis',
+        propertyName: 'show',
+        value: config.properties.showXAxis,
+      });
     }
-    try {
-      await visual.setProperty(
-        { objectName: 'title', propertyName: 'textSize' },
-        { schema: schemas.property, value: 25 }
-      );
-    } catch (err) {
-      console.warn('inlineVisualPinner: failed to set title.textSize', err);
+    if (config.properties.showYAxis !== undefined) {
+      propertySpecs.push({
+        objectName: 'valueAxis',
+        propertyName: 'show',
+        value: config.properties.showYAxis,
+      });
     }
   }
 
-  // 5. Display properties.
-  if (config.properties) {
-    if (config.properties.showLegend !== undefined) {
-      try {
-        await visual.setProperty(
-          { objectName: 'legend', propertyName: 'show' },
-          { schema: schemas.property, value: config.properties.showLegend }
-        );
-      } catch (err) {
-        console.warn('inlineVisualPinner: failed to set legend.show', err);
-      }
+  try {
+    for (const spec of propertySpecs) {
+      await visual.setProperty(
+        { objectName: spec.objectName, propertyName: spec.propertyName },
+        { schema: schemas.property, value: spec.value }
+      );
     }
-    if (config.properties.showXAxis !== undefined) {
-      try {
-        await visual.setProperty(
-          { objectName: 'categoryAxis', propertyName: 'show' },
-          { schema: schemas.property, value: config.properties.showXAxis }
-        );
-      } catch (err) {
-        console.warn('inlineVisualPinner: failed to set categoryAxis.show', err);
-      }
+  } catch (err) {
+    console.debug(
+      'inlineVisualPinner: setProperty failed; ' +
+        (abortOnPropertyFailure ? 'aborting' : 'continuing'),
+      err
+    );
+    if (abortOnPropertyFailure) {
+      return null;
     }
-    if (config.properties.showYAxis !== undefined) {
-      try {
-        await visual.setProperty(
-          { objectName: 'valueAxis', propertyName: 'show' },
-          { schema: schemas.property, value: config.properties.showYAxis }
-        );
-      } catch (err) {
-        console.warn('inlineVisualPinner: failed to set valueAxis.show', err);
-      }
-    }
+    // For the pin-to-widgets path a single decorative property failure
+    // shouldn't kill the pin — the visual itself was created successfully
+    // and save() can still persist it.
   }
 
   return { visualId: visual.name, pageName: newPage.name };
@@ -221,6 +229,11 @@ export async function pinInlineVisualToReport(
   config: VisualConfig
 ): Promise<PinResult> {
   const result = await _materializeVisual(report, config);
+  if (!result) {
+    // _materializeVisual only returns null when abortOnPropertyFailure is
+    // set (and this code path does not set it). Defensive.
+    throw new Error('inlineVisualPinner: failed to materialise visual');
+  }
 
   // 6. Best-effort save. The visual exists in the in-memory report regardless
   // of whether persistence succeeds, which is enough for the widgets tab to
@@ -238,7 +251,7 @@ export async function pinInlineVisualToReport(
     await report.save();
     await savePromise;
   } catch (saveError) {
-    console.warn(
+    console.debug(
       'inlineVisualPinner: report.save() did not complete cleanly; the visual is pinned to the in-memory report only.',
       saveError
     );
@@ -250,15 +263,20 @@ export async function pinInlineVisualToReport(
 /**
  * Same as `pinInlineVisualToReport` but skips `report.save()`. Use this when
  * you want to materialise a visual purely in the in-memory report so it can
- * be embedded with the `visual` embed type without dirtying the saved report.
+ * be embedded with the `visual` embed type without dirtying the saved
+ * report.
  *
- * The created visual lives only on the current embedded session's report
- * model; it disappears when the report is reloaded.
+ * Resolves to `null` if any `setProperty` call rejected — the consumer
+ * (e.g. `InlinePowerBIVisual`) treats that as a signal to fall back to its
+ * Recharts renderer.
  */
 export async function createInlineVisualOnly(
   report: Report,
   config: VisualConfig,
   opts: MaterializeOptions = {}
-): Promise<PinResult> {
-  return _materializeVisual(report, config, opts);
+): Promise<PinResult | null> {
+  return _materializeVisual(report, config, {
+    ...opts,
+    abortOnPropertyFailure: opts.abortOnPropertyFailure ?? true,
+  });
 }

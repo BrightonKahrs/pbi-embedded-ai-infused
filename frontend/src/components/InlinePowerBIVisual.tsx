@@ -41,7 +41,6 @@ const InlinePowerBIVisual: React.FC<InlinePowerBIVisualProps> = ({
 }) => {
   const [embedState, setEmbedState] = useState<EmbedState | null>(null);
   const [failed, setFailed] = useState<boolean>(false);
-  const [loading, setLoading] = useState<boolean>(false);
   // Track whether we've already attempted to materialise for this (report, config)
   // pair so React's strict-mode double-invoke doesn't create two pages.
   const attemptKeyRef = useRef<string | null>(null);
@@ -65,15 +64,34 @@ const InlinePowerBIVisual: React.FC<InlinePowerBIVisualProps> = ({
       }
       attemptKeyRef.current = key;
 
-      setLoading(true);
       setFailed(false);
-      try {
-        const { visualId, pageName } = await createInlineVisualOnly(report, config, {
-          pageNamePrefix: 'AI_InlineChat',
-          layout: { x: 0, y: 0, width: 600, height: 320 },
-        });
 
-        const pbiConfig = await apiService.getPowerBIConfig(visualId);
+      // Race the materialise + token fetch against a short timeout. The
+      // PBI authoring API often fails silently (the in-memory visual's
+      // setProperty calls 401 against the service), so we fall back to
+      // Recharts quickly rather than show a permanent "Loading…" pill.
+      const TIMEOUT_MS = 3000;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('inline-pbi-embed-timeout')), TIMEOUT_MS);
+      });
+
+      try {
+        const materialised = await Promise.race([
+          (async () => {
+            const result = await createInlineVisualOnly(report, config, {
+              pageNamePrefix: 'AI_InlineChat',
+              layout: { x: 0, y: 0, width: 600, height: 320 },
+            });
+            if (!result) {
+              throw new Error('inline-pbi-materialise-aborted');
+            }
+            const pbiConfig = await apiService.getPowerBIConfig(result.visualId);
+            return { result, pbiConfig };
+          })(),
+          timeoutPromise,
+        ]);
+
+        const { result, pbiConfig } = materialised;
         const resolvedTokenType =
           pbiConfig.tokenType === 'Aad' ? models.TokenType.Aad : models.TokenType.Embed;
 
@@ -82,24 +100,29 @@ const InlinePowerBIVisual: React.FC<InlinePowerBIVisualProps> = ({
           embedUrl: pbiConfig.embedUrl,
           accessToken: pbiConfig.accessToken,
           tokenType: resolvedTokenType,
-          visualName: visualId,
-          pageName: pageName,
+          visualName: result.visualId,
+          pageName: result.pageName,
           settings: {
             background: models.BackgroundType.Transparent,
           },
         };
 
         if (cancelled) return;
-        setEmbedState({ embedConfig: visualEmbedConfiguration, visualId, pageName });
+        setEmbedState({
+          embedConfig: visualEmbedConfiguration,
+          visualId: result.visualId,
+          pageName: result.pageName,
+        });
         setFailed(false);
-        onReady?.({ visualId, pageName });
+        onReady?.({ visualId: result.visualId, pageName: result.pageName });
       } catch (err: any) {
         if (cancelled) return;
-        console.warn('InlinePowerBIVisual: falling back to Recharts', err);
+        // Quiet — falling back to Recharts is the expected outcome whenever
+        // the report isn't in authoring mode or the service rejects the
+        // in-memory visual's property writes.
+        console.debug('InlinePowerBIVisual: falling back to Recharts', err);
         setFailed(true);
         onError?.(err instanceof Error ? err : new Error(String(err)));
-      } finally {
-        if (!cancelled) setLoading(false);
       }
     };
 
@@ -110,8 +133,10 @@ const InlinePowerBIVisual: React.FC<InlinePowerBIVisualProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [report, config]);
 
-  // Fallback path: report not authoring-capable, or materialisation failed.
-  if (!report || failed) {
+  // Fallback path: report not authoring-capable, materialisation failed,
+  // or the embed didn't complete inside our timeout. Show the Recharts
+  // preview with a small caption — no permanent "Loading…" pill.
+  if (!report || failed || !embedState) {
     return (
       <div className="inline-chart-pbi-fallback">
         <InlineChart
@@ -123,24 +148,8 @@ const InlinePowerBIVisual: React.FC<InlinePowerBIVisualProps> = ({
           className="inline-chart-footer"
           style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}
         >
-          Showing Recharts preview — open the Full report once to enable Power BI
-          embedded visuals.
+          Preview shown with charting library — pin to widgets for the full Power BI visual.
         </div>
-      </div>
-    );
-  }
-
-  if (loading || !embedState) {
-    return (
-      <div
-        className="inline-pbi-loading-pill"
-        role="status"
-        aria-label={`Loading visual: ${config.title}`}
-      >
-        <span className="inline-pbi-loading-spinner" aria-hidden="true" />
-        <span className="inline-pbi-loading-text">
-          Loading visual{config.title ? `: ${config.title}` : ''}…
-        </span>
       </div>
     );
   }
