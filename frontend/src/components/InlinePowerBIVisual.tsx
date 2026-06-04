@@ -133,22 +133,14 @@ const InlinePowerBIVisual: React.FC<InlinePowerBIVisualProps> = ({
   if (loading || !embedState) {
     return (
       <div
-        className="inline-chart"
-        role="figure"
-        aria-label={config.title}
-        style={{ height: height + 40 }}
+        className="inline-pbi-loading-pill"
+        role="status"
+        aria-label={`Loading visual: ${config.title}`}
       >
-        <div className="inline-chart-header">
-          <div className="inline-chart-title" title={config.title}>
-            {config.title}
-          </div>
-        </div>
-        <div
-          className="inline-chart-body"
-          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-        >
-          <span style={{ fontSize: 12, color: '#64748b' }}>Loading visual…</span>
-        </div>
+        <span className="inline-pbi-loading-spinner" aria-hidden="true" />
+        <span className="inline-pbi-loading-text">
+          Loading visual{config.title ? `: ${config.title}` : ''}…
+        </span>
       </div>
     );
   }

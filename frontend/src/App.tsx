@@ -9,6 +9,8 @@ import ChatShell, { ChatMode } from './components/ChatShell';
 import VisualCreatorModal from './components/VisualCreatorModal';
 import { apiService, InlineVisual } from './services/api';
 import { pinInlineVisualToReport } from './services/inlineVisualPinner';
+import { AgentStreamProvider } from './contexts/AgentStreamContext';
+import { GREETING } from './components/AIChat';
 
 /**
  * Cross-Filtering Feature Implementation:
@@ -344,6 +346,7 @@ function App() {
   );
 
   return (
+    <AgentStreamProvider initialAssistantGreeting={GREETING}>
     <div className="App">
       <header className="App-header">
         <div className="header-top">
@@ -479,18 +482,24 @@ function App() {
             />
           )}
         </div>
-        {chatMode === 'docked' && (
-          <div className="chat-section">
-            <ChatShell mode={chatMode} onModeChange={setChatMode}>
-              <AIChat onAddInlineVisual={handleAddInlineVisualToWidgets} currentReport={currentReport} />
-            </ChatShell>
-          </div>
-        )}
-        {chatMode !== 'docked' && (
+        {/* ChatShell is rendered exactly ONCE regardless of mode so that
+            the inner AIChat subtree (whose chat session lives in
+            AgentStreamProvider above) stays mounted across docked /
+            minimized / fullscreen transitions. The previous split
+            mounting in two branches caused the entire chat to unmount
+            and lose its conversation on every mode change.
+            In docked mode we wrap it in a flex column so it occupies
+            the dashboard's chat column; in fullscreen/minimized the
+            shell positions itself via CSS. */}
+        <div
+          className={
+            chatMode === 'docked' ? 'chat-section' : 'chat-section chat-section-detached'
+          }
+        >
           <ChatShell mode={chatMode} onModeChange={setChatMode}>
             <AIChat onAddInlineVisual={handleAddInlineVisualToWidgets} currentReport={currentReport} />
           </ChatShell>
-        )}
+        </div>
       </div>
 
       {/* Visual Creator Modal */}
@@ -506,6 +515,7 @@ function App() {
         onVisualCreated={handleVisualCreated}
       />
     </div>
+    </AgentStreamProvider>
   );
 }
 

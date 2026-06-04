@@ -92,6 +92,13 @@
   box-shadow: none !important;
 }
 
+/* Minimized mode keeps the panel mounted (so the inner chat subtree's
+   state survives) but hides it visually. The floating launcher is the
+   only visible chat affordance in this state. */
+.chat-shell-hidden {
+  display: none !important;
+}
+
 /* Fullscreen mode -------------------------------------------------------- */
 /* True full-viewport overlay: covers everything (including the purple
    App header), edge-to-edge with no border-radius and no margin so the
