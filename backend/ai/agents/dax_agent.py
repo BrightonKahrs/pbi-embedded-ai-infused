@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 from typing import Annotated, Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from agent_framework import Agent
@@ -69,6 +70,8 @@ class DaxAgent(BaseAgent):
         recorder: Optional[EventRecorder] = None,
         on_query_captured: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
         on_reasoning_delta: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_tool_start: Optional[Callable[[str, str, Dict[str, Any]], Awaitable[None]]] = None,
+        on_tool_end: Optional[Callable[[str, str, Optional[str], bool], Awaitable[None]]] = None,
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """Generate the DAX-driven answer for a user question.
 
@@ -91,6 +94,15 @@ class DaxAgent(BaseAgent):
         ``on_reasoning_delta`` is invoked with the text of each reasoning
         summary chunk emitted while streaming. Callers use it to surface
         the deep agent's thinking in the chat as it happens.
+
+        ``on_tool_start`` / ``on_tool_end`` fire around EVERY tool the
+        deep agent invokes — ``execute_dax_query_tool`` and
+        ``inspect_data_model_tool``. The router agent wires these to
+        push nested tool-call CUSTOM events onto its SSE queue so the
+        frontend timeline can render a chip per deep-agent tool call as
+        they happen. Signatures:
+            ``on_tool_start(tool_call_id, tool_name, args)``
+            ``on_tool_end(tool_call_id, tool_name, result_or_error, success)``
         """
         self._ensure_client()
 
@@ -140,22 +152,53 @@ class DaxAgent(BaseAgent):
         # explainability panel can show what the agent invoked, what
         # arguments it passed, and how long each call took. The recorder
         # wrappers are pure observers — they do not alter the tool's
-        # return value.
+        # return value. They also fan out to the optional
+        # ``on_tool_start`` / ``on_tool_end`` callbacks so callers (the
+        # router agent) can stream nested tool-call events for the deep
+        # agent through the SSE channel in real time.
+        async def _emit_tool_start(name: str, args: Dict[str, Any]) -> str:
+            tool_call_id = f"deep-{uuid.uuid4().hex[:12]}"
+            if on_tool_start is not None:
+                try:
+                    await on_tool_start(tool_call_id, name, args)
+                except Exception as cb_exc:  # noqa: BLE001 - callback is best-effort
+                    logger.warning(f"on_tool_start callback failed: {cb_exc}")
+            return tool_call_id
+
+        async def _emit_tool_end(
+            tool_call_id: str,
+            name: str,
+            result_or_error: Optional[str],
+            success: bool,
+        ) -> None:
+            if on_tool_end is not None:
+                try:
+                    await on_tool_end(tool_call_id, name, result_or_error, success)
+                except Exception as cb_exc:  # noqa: BLE001 - callback is best-effort
+                    logger.warning(f"on_tool_end callback failed: {cb_exc}")
+
         async def recorded_execute_dax_query_tool(
             dax_query: Annotated[
                 str,
                 Field(description="The DAX query to execute on the power bi semantic model"),
             ],
         ) -> str:
-            if recorder is None:
-                return await execute_dax_query_tool_capture(dax_query)
-            tool_call_id = recorder.start_tool(
+            tool_call_id = await _emit_tool_start(
                 "execute_dax_query_tool", {"dax_query": dax_query}
             )
+            recorder_call_id: Optional[str] = None
+            if recorder is not None:
+                recorder_call_id = recorder.start_tool(
+                    "execute_dax_query_tool", {"dax_query": dax_query}
+                )
             try:
                 result = await execute_dax_query_tool_capture(dax_query)
             except Exception as exc:  # noqa: BLE001
-                recorder.end_tool(tool_call_id, result=None, error=str(exc))
+                if recorder is not None and recorder_call_id is not None:
+                    recorder.end_tool(recorder_call_id, result=None, error=str(exc))
+                await _emit_tool_end(
+                    tool_call_id, "execute_dax_query_tool", str(exc), success=False
+                )
                 raise
             row_count: Optional[int] = None
             try:
@@ -164,9 +207,13 @@ class DaxAgent(BaseAgent):
                     row_count = len(parsed)
             except (json.JSONDecodeError, ValueError):
                 pass
-            recorder.end_tool(
-                tool_call_id,
-                result={"rows": row_count, "raw": result} if row_count is not None else result,
+            if recorder is not None and recorder_call_id is not None:
+                recorder.end_tool(
+                    recorder_call_id,
+                    result={"rows": row_count, "raw": result} if row_count is not None else result,
+                )
+            await _emit_tool_end(
+                tool_call_id, "execute_dax_query_tool", result, success=True
             )
             return result
 
@@ -176,17 +223,28 @@ class DaxAgent(BaseAgent):
                 Field(description="The INFO function or DMV query to run against the model."),
             ],
         ) -> str:
-            if recorder is None:
-                return await inspect_data_model_tool(info_function)
-            tool_call_id = recorder.start_tool(
+            tool_call_id = await _emit_tool_start(
                 "inspect_data_model_tool", {"info_function": info_function}
             )
+            recorder_call_id: Optional[str] = None
+            if recorder is not None:
+                recorder_call_id = recorder.start_tool(
+                    "inspect_data_model_tool", {"info_function": info_function}
+                )
             try:
                 result = await inspect_data_model_tool(info_function)
             except Exception as exc:  # noqa: BLE001
-                recorder.end_tool(tool_call_id, result=None, error=str(exc))
+                if recorder is not None and recorder_call_id is not None:
+                    recorder.end_tool(recorder_call_id, result=None, error=str(exc))
+                await _emit_tool_end(
+                    tool_call_id, "inspect_data_model_tool", str(exc), success=False
+                )
                 raise
-            recorder.end_tool(tool_call_id, result=result)
+            if recorder is not None and recorder_call_id is not None:
+                recorder.end_tool(recorder_call_id, result=result)
+            await _emit_tool_end(
+                tool_call_id, "inspect_data_model_tool", result, success=True
+            )
             return result
 
         agent = Agent(

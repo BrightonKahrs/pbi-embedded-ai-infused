@@ -265,9 +265,12 @@ def _make_custom_event(kind: str, payload: Dict[str, Any]) -> CustomEvent:
     Each ``kind`` produced by the router agent maps to a stable
     ``CustomEvent.name`` the frontend recognises:
 
-    * ``"handoff"``        -> ``AgentHandoff``
-    * ``"inline_visuals"`` -> ``InlineVisuals``
-    * ``"reasoning"``      -> ``Reasoning`` (live deep-agent thinking)
+    * ``"handoff"``          -> ``AgentHandoff``
+    * ``"inline_visuals"``   -> ``InlineVisuals``
+    * ``"reasoning"``        -> ``Reasoning`` (router-emitted reasoning, if any)
+    * ``"deep_reasoning"``   -> ``DeepReasoning`` (live deep-agent thinking)
+    * ``"deep_tool_start"``  -> ``DeepToolStart`` (nested tool-call begin)
+    * ``"deep_tool_end"``    -> ``DeepToolEnd`` (nested tool-call complete)
     """
     if kind == "handoff":
         return CustomEvent(name="AgentHandoff", value=payload)
@@ -275,6 +278,12 @@ def _make_custom_event(kind: str, payload: Dict[str, Any]) -> CustomEvent:
         return CustomEvent(name="InlineVisuals", value=payload)
     if kind == "reasoning":
         return CustomEvent(name="Reasoning", value=payload)
+    if kind == "deep_reasoning":
+        return CustomEvent(name="DeepReasoning", value=payload)
+    if kind == "deep_tool_start":
+        return CustomEvent(name="DeepToolStart", value=payload)
+    if kind == "deep_tool_end":
+        return CustomEvent(name="DeepToolEnd", value=payload)
     logger.warning(f"Unknown router custom-event kind: {kind}")
     return CustomEvent(name=kind, value=payload)
 
@@ -307,16 +316,20 @@ async def chat_stream(request_body: Dict[str, Any]) -> StreamingResponse:
     minimum ``{"messages": [{"role": "user", "content": "..."}]}``.
     Responds with a ``text/event-stream`` where each ``data:`` line is a
     JSON-encoded AG-UI event (RUN_STARTED, TEXT_MESSAGE_*, TOOL_CALL_*,
-    CUSTOM, etc.). The router agent additionally emits three CUSTOM event
-    families that the front-end recognises:
+    CUSTOM, etc.). The router agent additionally emits several CUSTOM
+    event families that the front-end recognises:
 
     * ``AgentHandoff`` — fires the moment routing to the deep DAX agent
       begins, BEFORE the deep run completes.
     * ``InlineVisuals`` — carries one or more ``InlineVisual`` configs
       so the chat can render a Recharts/Power BI preview inline. Emitted
       per captured DAX query as the deep agent works.
-    * ``Reasoning`` — streams the deep agent's reasoning summary as the
-      model thinks.
+    * ``DeepReasoning`` — streams the deep agent's reasoning summary as
+      the model thinks.
+    * ``DeepToolStart`` / ``DeepToolEnd`` — fire around every nested
+      tool call the deep DaxAgent makes (``execute_dax_query_tool``,
+      ``inspect_data_model_tool``), so the timeline can show what the
+      deep agent is doing as it happens.
 
     The generator interleaves framework events with router queue events
     by racing the next framework event against the next queue item with

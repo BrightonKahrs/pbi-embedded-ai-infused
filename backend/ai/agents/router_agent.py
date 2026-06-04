@@ -14,8 +14,12 @@ payloads onto a per-request queue:
 * ``InlineVisuals`` — emitted per captured DAX query (the deep agent
   streams these as it works) and also when the router answers a simple
   question directly via ``execute_dax_query``.
-* ``Reasoning`` — emitted as the deep agent streams its reasoning
+* ``DeepReasoning`` — emitted as the deep agent streams its reasoning
   summary so the UI can show the model's thinking live.
+* ``DeepToolStart`` / ``DeepToolEnd`` — emitted around every tool the
+  deep DaxAgent invokes (``execute_dax_query_tool``,
+  ``inspect_data_model_tool``) so the frontend timeline can render a
+  nested chip per deep-agent tool call as they happen.
 
 The queue is drained by the SSE generator in ``main.py`` interleaved
 with framework events, so these payloads end up alongside the regular
@@ -243,15 +247,63 @@ class RouterAgent(BaseAgent):
                 await push_visual_for_query(question, query)
 
             async def on_reasoning_delta(delta_text: str) -> None:
+                # Use the dedicated ``deep_reasoning`` payload kind so
+                # the frontend can render these chips under the deep
+                # agent banner rather than mixing them with the
+                # router's own (rare) reasoning output.
                 await custom_event_queue.put((
-                    "reasoning",
-                    {"content": delta_text, "source": "deep-analysis"},
+                    "deep_reasoning",
+                    {"delta": delta_text, "agent": "deep-analysis"},
+                ))
+
+            async def on_tool_start(
+                tool_call_id: str,
+                tool_name: str,
+                args: Dict[str, Any],
+            ) -> None:
+                # Build a short preview of the first argument so the
+                # chip can show e.g. the first 120 chars of the DAX
+                # query without ballooning the SSE payload.
+                preview_source = ""
+                for v in args.values():
+                    if isinstance(v, str):
+                        preview_source = v
+                        break
+                args_preview = preview_source[:120]
+                await custom_event_queue.put((
+                    "deep_tool_start",
+                    {
+                        "tool_call_id": tool_call_id,
+                        "name": tool_name,
+                        "args_preview": args_preview,
+                        "agent": "deep-analysis",
+                    },
+                ))
+
+            async def on_tool_end(
+                tool_call_id: str,
+                tool_name: str,
+                result_or_error: Optional[str],
+                success: bool,
+            ) -> None:
+                result_preview = (result_or_error or "")[:200]
+                await custom_event_queue.put((
+                    "deep_tool_end",
+                    {
+                        "tool_call_id": tool_call_id,
+                        "name": tool_name,
+                        "result_preview": result_preview,
+                        "success": success,
+                        "agent": "deep-analysis",
+                    },
                 ))
 
             answer_text, captured_queries = await dax_agent.generate_dax_query(
                 user_query=question,
                 on_query_captured=on_query_captured,
                 on_reasoning_delta=on_reasoning_delta,
+                on_tool_start=on_tool_start,
+                on_tool_end=on_tool_end,
             )
 
             # Safety net: if any captured query wasn't pushed via the
