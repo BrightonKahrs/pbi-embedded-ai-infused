@@ -25,21 +25,30 @@ export interface PinResult {
   pageName: string;
 }
 
+export interface MaterializeOptions {
+  /** Prefix for the auto-generated page name. Defaults to `AI_Inline`. */
+  pageNamePrefix?: string;
+  /** Partial layout overrides merged onto the default `VISUAL_LAYOUT`. */
+  layout?: Partial<typeof VISUAL_LAYOUT>;
+}
+
 /**
- * Add a new page to the supplied embedded report, materialise the supplied
- * `VisualConfig` on it, and best-effort persist the report. Returns the
- * `{ visualId, pageName }` of the newly created visual so the caller can
- * display it via Power BI's visual embed type.
+ * Shared internals for both `pinInlineVisualToReport` (pin + save) and
+ * `createInlineVisualOnly` (in-memory only). Creates a fresh page, materialises
+ * the visual on it, binds data fields, and sets title/display properties.
  *
  * The flow mirrors `AuthorVisualAIView`'s `createNewPageForVisual` +
- * `applyVisualConfig` + save logic. Power BI's authoring API is finicky so
- * we deliberately copy the known-good sequence rather than reinvent it.
+ * `applyVisualConfig`. Power BI's authoring API is finicky so we deliberately
+ * copy the known-good sequence rather than reinvent it.
  */
-export async function pinInlineVisualToReport(
+async function _materializeVisual(
   report: Report,
-  config: VisualConfig
+  config: VisualConfig,
+  opts: MaterializeOptions = {}
 ): Promise<PinResult> {
-  const newPageName = `AI_Inline_${Date.now()}`;
+  const prefix = opts.pageNamePrefix ?? 'AI_Inline';
+  const newPageName = `${prefix}_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  const layout = { ...VISUAL_LAYOUT, ...(opts.layout ?? {}) };
 
   // 1. Create a fresh page to host the visual.
   try {
@@ -66,7 +75,7 @@ export async function pinInlineVisualToReport(
   // 2. Create the visual on the new page.
   const visualResponse = await (newPage as any).createVisual(
     config.visualType,
-    VISUAL_LAYOUT
+    layout
   );
   const visual = visualResponse.visual;
   if (!visual) {
@@ -152,6 +161,21 @@ export async function pinInlineVisualToReport(
     }
   }
 
+  return { visualId: visual.name, pageName: newPage.name };
+}
+
+/**
+ * Add a new page to the supplied embedded report, materialise the supplied
+ * `VisualConfig` on it, and best-effort persist the report. Returns the
+ * `{ visualId, pageName }` of the newly created visual so the caller can
+ * display it via Power BI's visual embed type.
+ */
+export async function pinInlineVisualToReport(
+  report: Report,
+  config: VisualConfig
+): Promise<PinResult> {
+  const result = await _materializeVisual(report, config);
+
   // 6. Best-effort save. The visual exists in the in-memory report regardless
   // of whether persistence succeeds, which is enough for the widgets tab to
   // render it via the visual embed type, so save failures are logged only.
@@ -174,5 +198,21 @@ export async function pinInlineVisualToReport(
     );
   }
 
-  return { visualId: visual.name, pageName: newPage.name };
+  return result;
+}
+
+/**
+ * Same as `pinInlineVisualToReport` but skips `report.save()`. Use this when
+ * you want to materialise a visual purely in the in-memory report so it can
+ * be embedded with the `visual` embed type without dirtying the saved report.
+ *
+ * The created visual lives only on the current embedded session's report
+ * model; it disappears when the report is reloaded.
+ */
+export async function createInlineVisualOnly(
+  report: Report,
+  config: VisualConfig,
+  opts: MaterializeOptions = {}
+): Promise<PinResult> {
+  return _materializeVisual(report, config, opts);
 }
