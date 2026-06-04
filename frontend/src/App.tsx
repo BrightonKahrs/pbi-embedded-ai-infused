@@ -5,6 +5,7 @@ import './App.css';
 import PowerBIReport from './components/PowerBIReport';
 import VisualSelector from './components/VisualSelector';
 import AIChat from './components/AIChat';
+import ChatShell, { ChatMode } from './components/ChatShell';
 import VisualCreatorModal from './components/VisualCreatorModal';
 import { apiService } from './services/api';
 
@@ -41,6 +42,9 @@ function App() {
   // Store reference to the current report and page for visual creation
   const [currentReport, setCurrentReport] = useState<Report | null>(null);
   const [currentPage, setCurrentPage] = useState<Page | null>(null);
+
+  // Chat shell display mode (docked / minimized / fullscreen)
+  const [chatMode, setChatMode] = useState<ChatMode>('docked');
 
   // Load available pages and visuals on component mount
   useEffect(() => {
@@ -363,8 +367,8 @@ function App() {
 
 
       </header>
-      <div className="App-content">
-        <div className="report-section">
+      <div className={`App-content chat-mode-${chatMode}`}>
+        <div className="report-section" aria-hidden={chatMode === 'fullscreen'}>
           {embedType === 'visual' ? (
             /* Render visual grid with placeholder */
             <div className="multi-visual-container">
@@ -399,9 +403,18 @@ function App() {
             />
           )}
         </div>
-        <div className="chat-section">
-          <AIChat />
-        </div>
+        {chatMode === 'docked' && (
+          <div className="chat-section">
+            <ChatShell mode={chatMode} onModeChange={setChatMode}>
+              <AIChat />
+            </ChatShell>
+          </div>
+        )}
+        {chatMode !== 'docked' && (
+          <ChatShell mode={chatMode} onModeChange={setChatMode}>
+            <AIChat />
+          </ChatShell>
+        )}
       </div>
 
       {/* Visual Creator Modal */}
