@@ -22,6 +22,7 @@ import './InlineChart.css';
 interface InlineChartProps {
   visual: InlineVisual;
   onAddToPage?: (visual: InlineVisual) => void;
+  isPinned?: boolean;
 }
 
 // Palette tuned to the app's purple/indigo theme.
@@ -87,7 +88,7 @@ function prettyLabel(rawKey: string): string {
   return rawKey;
 }
 
-const InlineChart: React.FC<InlineChartProps> = ({ visual, onAddToPage }) => {
+const InlineChart: React.FC<InlineChartProps> = ({ visual, onAddToPage, isPinned }) => {
   const { config, data } = visual;
 
   const { chartData, categoryKey, valueKey, valueLabel, categoryLabel } = useMemo(() => {
@@ -236,15 +237,24 @@ const InlineChart: React.FC<InlineChartProps> = ({ visual, onAddToPage }) => {
         <div className="inline-chart-title" title={config.title}>
           {config.title}
         </div>
-        {onAddToPage && (
-          <button
-            type="button"
-            className="inline-chart-add-button"
-            onClick={() => onAddToPage(visual)}
-            title="Add this visual to your Power BI report"
+        {isPinned ? (
+          <span
+            className="inline-chart-add-button is-pinned"
+            title="This visual has been added to the Power BI Widgets tab"
           >
-            ＋ Add to page
-          </button>
+            ✓ Added to widgets
+          </span>
+        ) : (
+          onAddToPage && (
+            <button
+              type="button"
+              className="inline-chart-add-button"
+              onClick={() => onAddToPage(visual)}
+              title="Add this visual to your Power BI report"
+            >
+              ＋ Add to widgets
+            </button>
+          )
         )}
       </div>
       <div className="inline-chart-body" aria-hidden={false}>

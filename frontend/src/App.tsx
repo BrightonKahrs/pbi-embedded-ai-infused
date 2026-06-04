@@ -7,7 +7,8 @@ import VisualSelector from './components/VisualSelector';
 import AIChat from './components/AIChat';
 import ChatShell, { ChatMode } from './components/ChatShell';
 import VisualCreatorModal from './components/VisualCreatorModal';
-import { apiService } from './services/api';
+import { apiService, InlineVisual } from './services/api';
+import { pinInlineVisualToReport } from './services/inlineVisualPinner';
 
 /**
  * Cross-Filtering Feature Implementation:
@@ -282,6 +283,31 @@ function App() {
     }
   };
 
+  // Pin a chat-generated inline visual to the embedded report as a new widget.
+  // Requires that the Full report has been loaded at least once, since that is
+  // when `currentReport` is populated (and only an embedded authoring-capable
+  // report can host new visuals).
+  const handleAddInlineVisualToWidgets = useCallback(
+    async (inline: InlineVisual) => {
+      if (!currentReport) {
+        const msg =
+          'Open the Full report tab once so the report can be authored, then try again.';
+        alert(msg);
+        throw new Error(msg);
+      }
+      const { visualId, pageName: newPageName } = await pinInlineVisualToReport(
+        currentReport,
+        inline.config
+      );
+      setPageName(newPageName);
+      setVisualIds(prev =>
+        prev.includes(visualId) ? prev : [...prev, visualId]
+      );
+      setEmbedType('visual');
+    },
+    [currentReport]
+  );
+
   return (
     <div className="App">
       <header className="App-header">
@@ -406,13 +432,13 @@ function App() {
         {chatMode === 'docked' && (
           <div className="chat-section">
             <ChatShell mode={chatMode} onModeChange={setChatMode}>
-              <AIChat />
+              <AIChat onAddInlineVisual={handleAddInlineVisualToWidgets} />
             </ChatShell>
           </div>
         )}
         {chatMode !== 'docked' && (
           <ChatShell mode={chatMode} onModeChange={setChatMode}>
-            <AIChat />
+            <AIChat onAddInlineVisual={handleAddInlineVisualToWidgets} />
           </ChatShell>
         )}
       </div>

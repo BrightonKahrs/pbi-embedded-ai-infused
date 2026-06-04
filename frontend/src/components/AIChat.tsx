@@ -8,9 +8,15 @@ import './AIChat.css';
 // inline visuals the assistant returned for that turn.
 interface ChatMessageWithVisuals extends ChatMessage {
   visuals?: InlineVisual[];
+  /** Optional error string displayed inline when a pin attempt fails. */
+  pinError?: string;
 }
 
-const AIChat: React.FC = () => {
+interface AIChatProps {
+  onAddInlineVisual?: (visual: InlineVisual) => Promise<void>;
+}
+
+const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual }) => {
   const [messages, setMessages] = useState<ChatMessageWithVisuals[]>([
     {
       role: 'assistant',
@@ -21,7 +27,30 @@ const AIChat: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [recentEvents, setRecentEvents] = useState<AgentEvent[]>([]); // explainability:
   const [explainOpen, setExplainOpen] = useState(false); // explainability:
+  const [pinnedMessages, setPinnedMessages] = useState<Set<number>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const handlePin = async (messageIndex: number, visual: InlineVisual) => {
+    if (!onAddInlineVisual) return;
+    try {
+      await onAddInlineVisual(visual);
+      setPinnedMessages(prev => {
+        const next = new Set(prev);
+        next.add(messageIndex);
+        return next;
+      });
+      setMessages(prev =>
+        prev.map((m, i) =>
+          i === messageIndex && m.pinError ? { ...m, pinError: undefined } : m
+        )
+      );
+    } catch (error: any) {
+      const msg = error?.message || String(error);
+      setMessages(prev =>
+        prev.map((m, i) => (i === messageIndex ? { ...m, pinError: msg } : m))
+      );
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -81,6 +110,7 @@ const AIChat: React.FC = () => {
   const handleClearChat = async () => {
     try {
       await apiService.clearChatHistory();
+      setPinnedMessages(new Set());
       setMessages([
         {
           role: 'assistant',
@@ -118,8 +148,25 @@ const AIChat: React.FC = () => {
                 {hasCharts && (
                   <div className="message-charts">
                     {message.visuals!.map((visual, i) => (
-                      <InlineChart key={i} visual={visual} />
+                      <InlineChart
+                        key={i}
+                        visual={visual}
+                        onAddToPage={
+                          onAddInlineVisual
+                            ? (vis) => handlePin(index, vis)
+                            : undefined
+                        }
+                        isPinned={pinnedMessages.has(index)}
+                      />
                     ))}
+                    {message.pinError && (
+                      <div
+                        className="message-text"
+                        style={{ marginTop: 6, fontSize: 12, color: '#b91c1c' }}
+                      >
+                        Couldn't add: {message.pinError}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
