@@ -207,3 +207,34 @@ export interface InlineVisualWire {
   config: Record<string, unknown>;
   data: Array<Record<string, unknown>>;
 }
+
+// --- Deep-agent CUSTOM event payloads --------------------------------------
+
+/** Fired the moment the deep-analysis tool starts a sub-tool call. */
+export interface DeepToolStartPayload {
+  tool_call_id: string;
+  name: string;
+  args_preview?: string;
+  agent: string;
+}
+
+/** Fired when a deep-analysis sub-tool call completes. */
+export interface DeepToolEndPayload {
+  tool_call_id: string;
+  result_preview?: string;
+  success: boolean;
+  agent: string;
+}
+
+/** Streamed reasoning delta produced by the deep-analysis agent. */
+export interface DeepReasoningPayload {
+  delta: string;
+  agent: string;
+}
+
+/** Generic reasoning payload (router / fast model). */
+export interface ReasoningCustomPayload {
+  content?: string;
+  delta?: string;
+  source?: string;
+}
