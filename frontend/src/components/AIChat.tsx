@@ -1,9 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { apiService, ChatMessage } from '../services/api';
+import { apiService, ChatMessage, InlineVisual } from '../services/api';
+import InlineChart from './InlineChart';
 import './AIChat.css';
 
+// Local message shape that augments the wire-level ChatMessage with any
+// inline visuals the assistant returned for that turn.
+interface ChatMessageWithVisuals extends ChatMessage {
+  visuals?: InlineVisual[];
+}
+
 const AIChat: React.FC = () => {
-  const [messages, setMessages] = useState<ChatMessage[]>([
+  const [messages, setMessages] = useState<ChatMessageWithVisuals[]>([
     {
       role: 'assistant',
       content: 'Hello! I\'m your AI assistant for Power BI analytics. How can I help you today?'
@@ -26,7 +33,7 @@ const AIChat: React.FC = () => {
     
     if (!inputValue.trim() || isLoading) return;
 
-    const userMessage: ChatMessage = {
+    const userMessage: ChatMessageWithVisuals = {
       role: 'user',
       content: inputValue
     };
@@ -37,18 +44,26 @@ const AIChat: React.FC = () => {
 
     try {
       const response = await apiService.sendChatMessage({
-        messages: [...messages, userMessage]
+        messages: [...messages, userMessage].map(({ role, content }) => ({ role, content }))
       });
 
-      const assistantMessage: ChatMessage = {
+      // Prefer the new plural field; fall back to the legacy single
+      // `visual` for backwards compatibility.
+      const visuals: InlineVisual[] =
+        (response.visuals && response.visuals.length > 0)
+          ? response.visuals
+          : (response.visual ? [response.visual] : []);
+
+      const assistantMessage: ChatMessageWithVisuals = {
         role: 'assistant',
-        content: response.message
+        content: response.message,
+        visuals: visuals.length > 0 ? visuals : undefined,
       };
 
       setMessages(prev => [...prev, assistantMessage]);
     } catch (error) {
       console.error('Error sending message:', error);
-      const errorMessage: ChatMessage = {
+      const errorMessage: ChatMessageWithVisuals = {
         role: 'assistant',
         content: 'Sorry, I encountered an error. Please make sure the backend server is running.'
       };
@@ -82,19 +97,29 @@ const AIChat: React.FC = () => {
       </div>
 
       <div className="messages-container">
-        {messages.map((message, index) => (
-          <div
-            key={index}
-            className={`message ${message.role}`}
-          >
-            <div className="message-avatar">
-              {message.role === 'user' ? '👤' : '🤖'}
+        {messages.map((message, index) => {
+          const hasCharts = !!(message.visuals && message.visuals.length > 0);
+          return (
+            <div
+              key={index}
+              className={`message ${message.role}`}
+            >
+              <div className="message-avatar">
+                {message.role === 'user' ? '👤' : '🤖'}
+              </div>
+              <div className={`message-content${hasCharts ? ' has-charts' : ''}`}>
+                <div className="message-text">{message.content}</div>
+                {hasCharts && (
+                  <div className="message-charts">
+                    {message.visuals!.map((visual, i) => (
+                      <InlineChart key={i} visual={visual} />
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="message-content">
-              <div className="message-text">{message.content}</div>
-            </div>
-          </div>
-        ))}
+          );
+        })}
         {isLoading && (
           <div className="message assistant">
             <div className="message-avatar">🤖</div>

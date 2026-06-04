@@ -21,7 +21,10 @@ export interface InlineVisual {
 export interface ChatResponse {
   message: string;
   role: string;
+  /** Single visual, kept for backwards compatibility — mirrors visuals[0]. */
   visual?: InlineVisual | null;
+  /** Zero or more inline visuals, one per DAX query the AI ran. */
+  visuals?: InlineVisual[];
 }
 
 export interface VisualConfig {
