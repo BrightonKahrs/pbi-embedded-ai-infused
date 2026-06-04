@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { apiService, ChatMessage } from '../services/api';
+import { apiService, ChatMessage, AgentEvent } from '../services/api'; // explainability:
+import ExplainabilityPanel from './ExplainabilityPanel'; // explainability:
 import './AIChat.css';
 
 const AIChat: React.FC = () => {
@@ -11,6 +12,8 @@ const AIChat: React.FC = () => {
   ]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [recentEvents, setRecentEvents] = useState<AgentEvent[]>([]); // explainability:
+  const [explainOpen, setExplainOpen] = useState(false); // explainability:
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -39,6 +42,8 @@ const AIChat: React.FC = () => {
       const response = await apiService.sendChatMessage({
         messages: [...messages, userMessage]
       });
+
+      setRecentEvents(response.events ?? []); // explainability:
 
       const assistantMessage: ChatMessage = {
         role: 'assistant',
@@ -76,6 +81,7 @@ const AIChat: React.FC = () => {
     <div className="ai-chat-container">
       <div className="chat-header">
         <h3>💬 AI Assistant</h3>
+        <button onClick={() => setExplainOpen(true)} className="clear-button" title="Explain what the AI is doing" style={{ marginRight: 8 }}>🧠 Explain</button>{/* explainability: */}
         <button onClick={handleClearChat} className="clear-button" title="Clear conversation">
           🗑️ Clear
         </button>
@@ -127,6 +133,7 @@ const AIChat: React.FC = () => {
           ➤
         </button>
       </form>
+      <ExplainabilityPanel events={recentEvents} isOpen={explainOpen} onClose={() => setExplainOpen(false)} />{/* explainability: */}
     </div>
   );
 };

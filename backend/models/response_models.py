@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
+from ai.event_recorder import AgentEvent
 from models.visual_models import VisualConfig
 
 
@@ -29,6 +30,8 @@ class ChatResponse(BaseModel):
     message: str
     role: str = "assistant"
     visual: Optional[InlineVisual] = None
+
+    events: List[AgentEvent] = Field(default_factory=list)
 
 class PowerBIConfig(BaseModel):
     embedUrl: str

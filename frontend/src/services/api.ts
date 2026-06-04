@@ -18,10 +18,20 @@ export interface InlineVisual {
   data: Array<Record<string, any>>;
 }
 
+export interface AgentEvent {
+  id: string;
+  type: string;
+  timestamp: number;
+  name?: string | null;
+  details: Record<string, any>;
+  duration_ms?: number | null;
+}
+
 export interface ChatResponse {
   message: string;
   role: string;
   visual?: InlineVisual | null;
+  events?: AgentEvent[];
 }
 
 export interface VisualConfig {
