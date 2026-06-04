@@ -22,6 +22,9 @@ import {
 import type {
   StreamChatMessage,
   ToolCall,
+  DeepToolCall,
+  ReasoningBlock,
+  TimelineItem,
 } from "../hooks/useAgentStream";
 import type {
   InlineVisualWire,
@@ -34,9 +37,11 @@ export interface AgentStreamContextValue {
   messages: StreamChatMessage[];
   events: TimestampedEvent[];
   toolCalls: ToolCall[];
+  deepToolCalls: DeepToolCall[];
   routingEvents: RoutingEvent[];
   inlineVisuals: InlineVisualWire[];
-  reasoningBlocks: Record<string, string>;
+  reasoningBlocks: ReasoningBlock[];
+  timelineItems: TimelineItem[];
   isRunning: boolean;
   error: string | null;
   sendMessage: (content: string) => void;
