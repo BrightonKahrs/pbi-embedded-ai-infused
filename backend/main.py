@@ -176,37 +176,43 @@ async def chat_with_agent(request: ChatRequest):
             "content": user_message.content
         })
         
-        # Get response from DAX agent. The agent now returns both the
-        # prose answer and the raw rows it queried, so we can offer an
-        # inline chart preview when the result has a chart-friendly shape.
-        response_content, captured_rows = await dax_agent.generate_dax_query(
+        # Get response from DAX agent. The agent returns the prose
+        # answer plus a list of every DAX query it executed (one entry
+        # per captured result set) so we can render one inline chart
+        # per query.
+        answer_text, captured_queries = await dax_agent.generate_dax_query(
             user_query=user_message.content
         )
 
-        inline_visual: Optional[InlineVisual] = None
-        if captured_rows:
+        visuals: list[InlineVisual] = []
+        if captured_queries:
             try:
-                suggested = await visual_creator_agent.suggest_visual_for_rows(
+                suggested_configs = await visual_creator_agent.suggest_visuals_for_queries(
                     user_message=user_message.content,
-                    rows=captured_rows,
+                    queries=captured_queries,
                 )
-                if suggested is not None:
-                    inline_visual = InlineVisual(
-                        config=suggested,
-                        data=captured_rows,
+                for query, suggested in zip(captured_queries, suggested_configs):
+                    if suggested is None:
+                        continue
+                    visuals.append(
+                        InlineVisual(
+                            config=suggested,
+                            data=query.get("rows", []),
+                        )
                     )
             except Exception as e:  # noqa: BLE001 - chart is best-effort
                 logger.warning(f"Inline visual suggestion failed: {e}")
 
         conversation_history.append({
             "role": "assistant",
-            "content": response_content
+            "content": answer_text
         })
 
         return ChatResponse(
-            message=response_content,
+            message=answer_text,
             role="assistant",
-            visual=inline_visual,
+            visual=visuals[0] if visuals else None,
+            visuals=visuals,
         )
 
     except Exception as e:

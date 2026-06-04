@@ -28,7 +28,11 @@ class InlineVisual(BaseModel):
 class ChatResponse(BaseModel):
     message: str
     role: str = "assistant"
+    # ``visual`` is kept for backwards compatibility with clients that only
+    # know how to render a single inline chart. When ``visuals`` is
+    # populated, ``visual`` mirrors ``visuals[0]``.
     visual: Optional[InlineVisual] = None
+    visuals: List[InlineVisual] = Field(default_factory=list)
 
 class PowerBIConfig(BaseModel):
     embedUrl: str

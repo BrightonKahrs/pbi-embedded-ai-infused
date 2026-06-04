@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -135,3 +136,36 @@ class VisualCreatorAgent(BaseAgent):
         except Exception as e:  # noqa: BLE001 - swallow so chat still works
             logger.warning(f"Could not suggest inline visual: {e}")
             return None
+
+    async def suggest_visuals_for_queries(
+        self,
+        user_message: str,
+        queries: List[Dict[str, Any]],
+    ) -> List[Optional[VisualConfig]]:
+        """Suggest one inline ``VisualConfig`` per captured DAX query.
+
+        ``queries`` is the list emitted by ``DaxAgent.generate_dax_query``
+        — each entry is ``{"dax": str, "rows": List[dict]}``. We call
+        :meth:`suggest_visual_for_rows` for every query in parallel and
+        return the results in the same order. Entries whose rows fail the
+        chart-friendliness heuristics (single scalar, too many rows,
+        etc.) come back as ``None`` so the caller can pair the result
+        list with the original queries by index.
+        """
+        if not queries:
+            return []
+
+        tasks = [
+            self.suggest_visual_for_rows(user_message=user_message, rows=q.get("rows", []))
+            for q in queries
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        configs: List[Optional[VisualConfig]] = []
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"Inline visual suggestion failed: {result}")
+                configs.append(None)
+            else:
+                configs.append(result)
+        return configs

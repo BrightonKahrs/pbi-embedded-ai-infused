@@ -33,11 +33,22 @@ model schema and DAX authoring rules. Treat that skill as the source of
 truth — when its guidance conflicts with anything else, the skill wins.
 
 Workflow for every user question:
-  1. Compose a single DAX query that follows the dax-expert skill rules.
-  2. Call execute_dax_query_tool exactly once.
-  3. Translate the rows into a concise, human-readable answer with
-     numbers formatted using thousands separators.
+  1. Compose DAX queries that follow the dax-expert skill rules.
+  2. Call execute_dax_query_tool. You MAY call it more than once when a
+     single query cannot answer the question on its own (for example,
+     when the user asks to compare different measures, different time
+     grains, or different breakdowns side-by-side). Each query must
+     remain minimal and focused — do NOT cram multiple analyses into
+     one EVALUATE.
+  3. Keep the number of queries small. Never call execute_dax_query_tool
+     more than 4 times for a single user question.
+  4. Translate the rows into a concise, human-readable answer with
+     numbers formatted using thousands separators. When you ran more
+     than one query, weave the results together in the answer.
 """
+
+
+MAX_DAX_QUERIES_PER_RUN = 4
 
 
 class DaxAgent(BaseAgent):
@@ -49,14 +60,16 @@ class DaxAgent(BaseAgent):
 
     async def generate_dax_query(
         self, user_query: str
-    ) -> Tuple[str, Optional[List[Dict[str, Any]]]]:
+    ) -> Tuple[str, List[Dict[str, Any]]]:
         """Generate the DAX-driven answer for a user question.
 
-        Returns a tuple ``(answer_text, captured_rows)``. ``captured_rows``
-        is the raw list of dictionaries returned by the most recent
-        ``execute_dax_query_tool`` invocation during this run, or ``None``
-        if no successful query was executed. The caller can pair the rows
-        with a ``VisualConfig`` to produce an inline chart.
+        Returns a tuple ``(answer_text, captured_queries)``.
+        ``captured_queries`` is the ordered list of every successful
+        ``execute_dax_query_tool`` invocation during this run. Each entry
+        is a dict ``{"dax": str, "rows": List[dict]}``. The list is empty
+        when no DAX query produced rows. The caller can pair each query's
+        rows with a ``VisualConfig`` to produce one or more inline
+        charts.
         """
         self._ensure_client()
 
@@ -64,8 +77,11 @@ class DaxAgent(BaseAgent):
             raise RuntimeError("DaxAgent not started. Call start() first.")
 
         # Per-request capture state. We wrap the existing tool so we can
-        # observe the rows it returned without changing its public API.
-        captured: Dict[str, Any] = {"rows": None, "dax": None}
+        # observe the rows it returned without changing its public API,
+        # and we cap the number of invocations to keep runaway loops in
+        # check.
+        captured_queries: List[Dict[str, Any]] = []
+        invocation_count = {"n": 0}
 
         async def execute_dax_query_tool_capture(
             dax_query: Annotated[
@@ -74,15 +90,22 @@ class DaxAgent(BaseAgent):
             ],
         ) -> str:
             """Execute a DAX query against the Power BI dataset and capture rows for charting."""
+            invocation_count["n"] += 1
+            if invocation_count["n"] > MAX_DAX_QUERIES_PER_RUN:
+                raise RuntimeError(
+                    f"execute_dax_query_tool was called more than "
+                    f"{MAX_DAX_QUERIES_PER_RUN} times for a single user "
+                    "question. Refusing to run another query to avoid a "
+                    "runaway loop."
+                )
             result = await execute_dax_query_tool(dax_query)
             try:
                 parsed = json.loads(result)
                 if isinstance(parsed, list):
-                    captured["rows"] = parsed
-                    captured["dax"] = dax_query
+                    captured_queries.append({"dax": dax_query, "rows": parsed})
             except (json.JSONDecodeError, ValueError):
-                # Tool returned an error string, not JSON rows — leave
-                # captured rows as None so the chat won't suggest a visual.
+                # Tool returned an error string, not JSON rows — skip
+                # capture so the chat won't suggest a visual for it.
                 pass
             return result
 
@@ -95,5 +118,8 @@ class DaxAgent(BaseAgent):
         )
 
         result = await agent.run(messages=user_query)
-        logger.info(f"DAX agent answer: {result.text}")
-        return result.text, captured["rows"]
+        logger.info(
+            f"DAX agent answer: {result.text} "
+            f"(captured {len(captured_queries)} query result(s))"
+        )
+        return result.text, captured_queries
