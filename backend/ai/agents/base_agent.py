@@ -14,16 +14,19 @@ logger = logging.getLogger(__name__)
 class BaseAgent(ABC):
     """Abstract base class for AI agents with shared Foundry chat client setup."""
 
-    def __init__(self, agent_name: str):
+    def __init__(self, agent_name: str, model_deployment_name: Optional[str] = None):
         """
         Initialize the base agent.
 
         Args:
             agent_name: Name of the agent (used for logging and client identification)
+            model_deployment_name: Optional override for the Azure AI model
+                deployment to use for this agent. When ``None``, falls back
+                to ``config.azure_ai_model_deployment_name``.
         """
         self._agent_name = agent_name
         self._endpoint = config.azure_ai_project_endpoint
-        self._deployment_name = config.azure_ai_model_deployment_name
+        self._deployment_name = model_deployment_name or config.azure_ai_model_deployment_name
         self._credential: Optional[DefaultAzureCredential] = None
         self._client: Optional[FoundryChatClient] = None
 
@@ -40,6 +43,9 @@ class BaseAgent(ABC):
             project_endpoint=self._endpoint,
             model=self._deployment_name,
             credential=self._credential,
+        )
+        logger.info(
+            f"{self._agent_name} using model deployment: {self._deployment_name}"
         )
         logger.info(f"{self._agent_name} started")
 

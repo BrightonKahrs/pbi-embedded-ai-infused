@@ -11,6 +11,19 @@ class Config:
         self.azure_ai_model_deployment_name = os.getenv("AZURE_AI_MODEL_DEPLOYMENT_NAME")
         self.azure_ai_api_key = os.getenv("AZURE_AI_API_KEY")
 
+        # Per-agent deployment overrides. The router/triage agent should
+        # be cheap and fast; the deep-analysis (DAX) agent should be a
+        # more capable model. Both fall back to the shared deployment
+        # name so any agent that hasn't been migrated keeps working.
+        self.azure_ai_fast_model_deployment_name = (
+            os.getenv("AZURE_AI_FAST_MODEL_DEPLOYMENT_NAME")
+            or self.azure_ai_model_deployment_name
+        )
+        self.azure_ai_deep_model_deployment_name = (
+            os.getenv("AZURE_AI_DEEP_MODEL_DEPLOYMENT_NAME")
+            or self.azure_ai_model_deployment_name
+        )
+
         # Power BI configuration
         self.powerbi_workspace_id = os.getenv("POWERBI_WORKSPACE_ID")
         self.powerbi_dataset_id = os.getenv("POWERBI_DATASET_ID")
