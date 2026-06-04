@@ -45,7 +45,20 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual }) => {
         )
       );
     } catch (error: any) {
-      const msg = error?.message || String(error);
+      // Power BI SDK rejections often have neither `.message` nor a useful
+      // `toString()`, so coerce through a chain of fallbacks before we give up
+      // and stringify. Keeps "Couldn't add: undefined" out of the UI.
+      const msg =
+        error?.message
+        || error?.detailedMessage
+        || (typeof error === 'string' ? error : null)
+        || (() => {
+          try {
+            return JSON.stringify(error);
+          } catch {
+            return String(error);
+          }
+        })();
       setMessages(prev =>
         prev.map((m, i) => (i === messageIndex ? { ...m, pinError: msg } : m))
       );

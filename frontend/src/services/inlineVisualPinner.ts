@@ -10,11 +10,17 @@ const schemas = {
   property: 'http://powerbi.com/product/schema#property',
 };
 
+// Default tile for the pinned visual. Authoring against the report happens at
+// the report's authored canvas resolution, but the widget tile rendered via
+// the visual-embed type rescales to fit the surrounding container — so we
+// pick an aspect ratio that matches the widget tile (~1.875:1) and a modest
+// authored size so even a fallback non-scaling render fits the tile without
+// cropping axis labels.
 const VISUAL_LAYOUT = {
-  x: 20,
-  y: 20,
-  width: 1240,
-  height: 680,
+  x: 0,
+  y: 0,
+  width: 600,
+  height: 320,
   displayState: { mode: 0 },
 };
 
@@ -23,6 +29,37 @@ const SAVE_TIMEOUT_MS = 30000;
 export interface PinResult {
   visualId: string;
   pageName: string;
+}
+
+/**
+ * Coerce an arbitrary Power BI SDK rejection (often a plain object with
+ * `detailedMessage` and no `.message`) into a non-empty string so the caller
+ * can surface a useful error instead of "undefined".
+ */
+function extractErrorMessage(error: unknown): string {
+  if (!error) return 'unknown error';
+  if (typeof error === 'string') return error;
+  const anyErr = error as any;
+  if (typeof anyErr.message === 'string' && anyErr.message) return anyErr.message;
+  if (typeof anyErr.detailedMessage === 'string' && anyErr.detailedMessage) {
+    return anyErr.detailedMessage;
+  }
+  try {
+    const json = JSON.stringify(error);
+    if (json && json !== '{}') return json;
+  } catch {
+    /* fall through */
+  }
+  return String(error);
+}
+
+/**
+ * Re-throw a non-Error rejection from the Power BI authoring SDK as an Error
+ * whose `.message` is a human-readable description prefixed with `phase`, so
+ * upstream code that does `error?.message || String(error)` works.
+ */
+function rethrowWithContext(phase: string, error: unknown): never {
+  throw new Error(`${phase}: ${extractErrorMessage(error)}`);
 }
 
 /**
@@ -46,7 +83,10 @@ export async function pinInlineVisualToReport(
     await report.addPage(newPageName);
   } catch (error) {
     console.error('inlineVisualPinner: failed to add page', error);
-    throw error;
+    rethrowWithContext(
+      'could not add new page (the report must be embedded in Edit mode to author visuals)',
+      error
+    );
   }
 
   const pages = await report.getPages();
@@ -64,10 +104,16 @@ export async function pinInlineVisualToReport(
   }
 
   // 2. Create the visual on the new page.
-  const visualResponse = await (newPage as any).createVisual(
-    config.visualType,
-    VISUAL_LAYOUT
-  );
+  let visualResponse: any;
+  try {
+    visualResponse = await (newPage as any).createVisual(
+      config.visualType,
+      VISUAL_LAYOUT
+    );
+  } catch (error) {
+    console.error('inlineVisualPinner: createVisual failed', error);
+    rethrowWithContext(`could not create ${config.visualType} visual`, error);
+  }
   const visual = visualResponse.visual;
   if (!visual) {
     throw new Error('inlineVisualPinner: createVisual returned no visual');

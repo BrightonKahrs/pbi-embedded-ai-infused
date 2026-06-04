@@ -11,23 +11,63 @@ interface PowerBIReportProps {
   pageName?: string;
   embedType?: 'report' | 'visual';
   editMode?: boolean; // Enable edit mode for visual authoring
+  /**
+   * When `editMode` is enabled, hide the Power BI edit chrome (action/status
+   * bars, fields/visualizations panes, visual headers, and the top edit bar)
+   * so the report still looks like a normal viewer to end users while we
+   * retain authoring permissions under the hood. Defaults to false.
+   */
+  hideEditBar?: boolean;
   onDataSelected?: (visualId: string, event: any) => void;
   onVisualRef?: (visualId: string, visualRef: any) => void;
   onReportLoaded?: (report: Report, page: Page | null) => void;
 }
 
-const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageName, embedType = 'report', editMode = false, onDataSelected, onVisualRef, onReportLoaded }) => {
-  const [embedConfig, setEmbedConfig] = useState<models.IReportEmbedConfiguration | models.IVisualEmbedConfiguration | null>(null);
+const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageName, embedType = 'report', editMode = false, hideEditBar = false, onDataSelected, onVisualRef, onReportLoaded }) => {
+  // Build a "bootstrap" embed config — no embedUrl, no accessToken — so
+  // powerbi-client-react synchronously calls `powerbi.bootstrap(...)` on
+  // mount and the Power BI iframe shell appears immediately, before the
+  // backend round-trip for the real embed token completes. Once the real
+  // config arrives we set it in state; the component's componentDidUpdate
+  // detects the change (via lodash.isequal) and finishes the embed in
+  // place without tearing down the iframe.
+  const buildBootstrapConfig = ():
+    | models.IReportEmbedConfiguration
+    | models.IVisualEmbedConfiguration => {
+    if (embedType === 'visual' && visualId) {
+      return {
+        type: 'visual',
+        tokenType: models.TokenType.Embed,
+        embedUrl: '',
+        accessToken: '',
+        visualName: visualId,
+        pageName: pageName || '',
+      } as models.IVisualEmbedConfiguration;
+    }
+    return {
+      type: 'report',
+      tokenType: models.TokenType.Embed,
+      embedUrl: '',
+      accessToken: '',
+    } as models.IReportEmbedConfiguration;
+  };
+
+  const [embedConfig, setEmbedConfig] = useState<
+    models.IReportEmbedConfiguration | models.IVisualEmbedConfiguration
+  >(buildBootstrapConfig);
   const [error, setError] = useState<string>('');
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Reset to a fresh bootstrap config whenever the key props change so the
+    // iframe shell shows immediately while the new token is fetched.
+    setEmbedConfig(buildBootstrapConfig());
+    setError('');
     loadPowerBIConfig();
-  }, [reportId, visualId, embedType]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportId, visualId, embedType, editMode, hideEditBar, pageName]);
 
   const loadPowerBIConfig = async () => {
     try {
-      setLoading(true);
       setError('');
       
       // Get config with optional visual ID
@@ -50,54 +90,75 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageN
           pageName: pageName, // Required for visual embedding
           settings: {
             background: models.BackgroundType.Transparent,
-          }
+            // Scale the visual to fit the surrounding widget tile instead of
+            // rendering at its authored size (which would otherwise overflow
+            // or crop on small widget tiles).
+            layoutType: models.LayoutType.Custom,
+            customLayout: {
+              displayOption: models.DisplayOption.FitToPage,
+            },
+            // Hide the per-visual chrome (header menu, ellipsis) inside tiles.
+            visualSettings: {
+              visualHeaders: [
+                {
+                  settings: {
+                    visible: false,
+                  },
+                },
+              ],
+            },
+          },
         };
         
         setEmbedConfig(visualEmbedConfiguration);
       } else {
         // Report embedding configuration
+        const useEditMode = editMode;
         const reportEmbedConfiguration: models.IReportEmbedConfiguration = {
           type: 'report',
           embedUrl: config.embedUrl,
           accessToken: config.accessToken,
           tokenType: resolvedTokenType,
-          viewMode: editMode ? models.ViewMode.Edit : models.ViewMode.View,
-          permissions: editMode ? models.Permissions.All : models.Permissions.Read,
+          viewMode: useEditMode ? models.ViewMode.Edit : models.ViewMode.View,
+          permissions: useEditMode ? models.Permissions.All : models.Permissions.Read,
           settings: {
             panes: {
               filters: {
                 expanded: false,
-                visible: false
+                visible: false,
               },
               pageNavigation: {
-                visible: false
-              }
+                visible: false,
+              },
+              // Hide authoring panes when running in hidden-edit mode so the
+              // viewer looks like a normal embedded report.
+              ...(useEditMode && hideEditBar
+                ? {
+                    fields: { visible: false },
+                    visualizations: { visible: false },
+                  }
+                : {}),
             },
             background: models.BackgroundType.Transparent,
-          }
-        };
+            ...(useEditMode && hideEditBar
+              ? {
+                  bars: {
+                    actionBar: { visible: false },
+                    statusBar: { visible: false },
+                  },
+                }
+              : {}),
+          },
+          ...(useEditMode && hideEditBar ? { hideEditBar: true } : {}),
+        } as models.IReportEmbedConfiguration;
         
         setEmbedConfig(reportEmbedConfiguration);
       }
-      
-      setLoading(false);
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to load Power BI configuration. Please ensure the backend is running and configured.');
-      setLoading(false);
       console.error('Error loading Power BI config:', err);
     }
   };
-
-  if (loading) {
-    return (
-      <div className="powerbi-container">
-        <div className="loading-state">
-          <div className="spinner"></div>
-          <p>Loading Power BI {embedType === 'visual' ? 'Visual' : 'Report'}...</p>
-        </div>
-      </div>
-    );
-  }
 
   if (error) {
     return (
@@ -132,6 +193,17 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageN
         embedConfig={embedConfig}
         cssClassName="powerbi-report-frame"
         getEmbeddedComponent={(embeddedComponent) => {
+          // powerbi-client-react invokes this callback twice when the
+          // bootstrap pattern is in play: once for the bootstrap shell (no
+          // real connection) and again once the full embed config is
+          // applied. Skip the bootstrap pass so consumers don't try to
+          // call report.getPages() etc. on a stub.
+          const isBootstrapPass =
+            !('accessToken' in embedConfig) || !embedConfig.accessToken;
+          if (isBootstrapPass) {
+            console.log('Power BI bootstrap iframe mounted (awaiting token)');
+            return;
+          }
           console.log('Power BI Component Embedded:', embeddedComponent);
           
           // For full report embedding, store the report reference
