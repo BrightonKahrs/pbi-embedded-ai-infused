@@ -1,16 +1,24 @@
 """
 FastAPI Backend for Power BI Embedded with AI Agent Chat
 """
+import asyncio
 import os
 import logging 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+
+from ag_ui.core import CustomEvent, RunErrorEvent
+from ag_ui.encoder import EventEncoder
+from agent_framework_ag_ui._agent import AgentConfig
+from agent_framework_ag_ui._agent_run import run_agent_stream
 
 from pbi.generate_pbi_token import PowerBITokenGenerator
 from ai.agents.dax_agent import DaxAgent
+from ai.agents.router_agent import RouterAgent
 from ai.agents.visual_creator_agent import VisualCreatorAgent
 from ai.event_recorder import EventRecorder
 from models.response_models import (
@@ -39,6 +47,8 @@ logger = logging.getLogger(__name__)
 # Shared agent instances
 dax_agent = DaxAgent()
 visual_creator_agent = VisualCreatorAgent()
+# Fast triage/router agent — owns the routing tool that delegates to dax_agent.
+router_agent = RouterAgent(dax_agent=dax_agent, visual_creator_agent=visual_creator_agent)
 
 
 # In-memory conversation history (in production, use a database)
@@ -51,11 +61,17 @@ async def lifespan(app: FastAPI):
     # Startup
     await dax_agent.start()
     await visual_creator_agent.start()
+    await router_agent.start()
     await initialize_pbi_token()
+    # Expose agents on app.state for endpoints that prefer DI over module globals.
+    app.state.dax_agent = dax_agent
+    app.state.visual_creator_agent = visual_creator_agent
+    app.state.router_agent = router_agent
     yield
     # Shutdown
     await dax_agent.stop()
     await visual_creator_agent.stop()
+    await router_agent.stop()
 
 app = FastAPI(
     title="Power BI Embedded AI Backend",
@@ -241,6 +257,97 @@ async def clear_chat_history():
     """Clear conversation history"""
     conversation_history.clear()
     return {"message": "Chat history cleared"}
+
+
+def _drain_custom_events(
+    queue: "asyncio.Queue[tuple[str, Dict[str, Any]]]",
+    encoder: EventEncoder,
+):
+    """Drain pending router-emitted CUSTOM events from ``queue`` and encode them.
+
+    Generator so callers can ``yield from`` it between framework events
+    in the SSE pipeline. Each payload pushed by the router agent is
+    wrapped as the appropriate AG-UI ``CustomEvent`` and SSE-encoded.
+    """
+    while not queue.empty():
+        try:
+            kind, payload = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+        if kind == "handoff":
+            yield encoder.encode(CustomEvent(name="AgentHandoff", value=payload))
+        elif kind == "inline_visuals":
+            yield encoder.encode(CustomEvent(name="InlineVisuals", value=payload))
+        else:
+            logger.warning(f"Unknown router custom-event kind: {kind}")
+
+
+@app.post("/api/chat/stream", tags=["AG-UI"])
+async def chat_stream(request_body: Dict[str, Any]) -> StreamingResponse:
+    """Streaming AG-UI chat endpoint.
+
+    Body shape mirrors ``AGUIRunRequest`` from the AG-UI protocol — at
+    minimum ``{"messages": [{"role": "user", "content": "..."}]}``.
+    Responds with a ``text/event-stream`` where each ``data:`` line is a
+    JSON-encoded AG-UI event (RUN_STARTED, TEXT_MESSAGE_*, TOOL_CALL_*,
+    CUSTOM, etc.). The router agent additionally emits two CUSTOM event
+    families that the front-end recognises:
+
+    * ``AgentHandoff`` — fires when routing to the deep DAX agent.
+    * ``InlineVisuals`` — carries one or more ``InlineVisual`` configs
+      so the chat can render a Recharts/Power BI preview inline.
+    """
+    if not isinstance(request_body, dict) or not request_body.get("messages"):
+        raise HTTPException(status_code=400, detail="Request body must include 'messages'.")
+
+    custom_event_queue: "asyncio.Queue[tuple[str, Dict[str, Any]]]" = asyncio.Queue()
+    agent = router_agent.build_agent(custom_event_queue)
+    config = AgentConfig(require_confirmation=False)
+    encoder = EventEncoder()
+
+    async def event_generator():
+        event_count = 0
+        try:
+            async for event in run_agent_stream(request_body, agent, config):
+                # Flush any router-emitted CUSTOM events ahead of the next framework event.
+                for encoded in _drain_custom_events(custom_event_queue, encoder):
+                    yield encoded
+                event_count += 1
+                try:
+                    yield encoder.encode(event)
+                except Exception as encode_error:  # noqa: BLE001
+                    logger.exception("Failed to encode AG-UI event")
+                    try:
+                        yield encoder.encode(RunErrorEvent(
+                            message="Internal error while streaming events.",
+                            code=type(encode_error).__name__,
+                        ))
+                    except Exception:
+                        pass
+                    return
+            # Drain anything the tool put on the queue after the final framework event.
+            for encoded in _drain_custom_events(custom_event_queue, encoder):
+                yield encoded
+            logger.info(f"[/api/chat/stream] streamed {event_count} events")
+        except Exception as stream_err:  # noqa: BLE001
+            logger.exception("[/api/chat/stream] streaming failed")
+            try:
+                yield encoder.encode(RunErrorEvent(
+                    message=f"Streaming error: {type(stream_err).__name__}: {stream_err}",
+                    code="StreamError",
+                ))
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @app.get("/api/powerbi/config")
 async def get_powerbi_config(visual_id: Optional[str] = None):
