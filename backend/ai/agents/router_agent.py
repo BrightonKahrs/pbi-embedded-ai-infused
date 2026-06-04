@@ -20,6 +20,10 @@ payloads onto a per-request queue:
   deep DaxAgent invokes (``execute_dax_query_tool``,
   ``inspect_data_model_tool``) so the frontend timeline can render a
   nested chip per deep-agent tool call as they happen.
+* ``VisualExplanationDelta`` / ``VisualExplanationEnd`` — streamed
+  alongside each ``InlineVisuals`` payload so the UI can show a short
+  prose explanation of what the chart reveals, tied to the visual via
+  ``visual_index``.
 
 The queue is drained by the SSE generator in ``main.py`` interleaved
 with framework events, so these payloads end up alongside the regular
@@ -40,6 +44,7 @@ from pydantic import Field
 from ai.agents.base_agent import BaseAgent
 from ai.agents.dax_agent import DaxAgent
 from ai.agents.visual_creator_agent import VisualCreatorAgent
+from ai.agents.visual_explainer import VisualExplainer
 from ai.ai_config import config
 from ai.tools.execute_dax_query_tool import execute_dax_query_tool
 from ai.tools.inspect_data_model_tool import inspect_data_model_tool
@@ -107,6 +112,7 @@ class RouterAgent(BaseAgent):
         self,
         dax_agent: DaxAgent,
         visual_creator_agent: VisualCreatorAgent,
+        visual_explainer: Optional[VisualExplainer] = None,
     ) -> None:
         super().__init__(
             agent_name="RouterAgent",
@@ -114,6 +120,7 @@ class RouterAgent(BaseAgent):
         )
         self._dax_agent = dax_agent
         self._visual_creator_agent = visual_creator_agent
+        self._visual_explainer = visual_explainer
 
     def build_agent(self, custom_event_queue: "asyncio.Queue[CustomEventPayload]") -> Agent:
         """Build a fresh ``Agent`` wired to push CUSTOM events into ``custom_event_queue``.
@@ -124,19 +131,60 @@ class RouterAgent(BaseAgent):
         self._ensure_client()
         dax_agent = self._dax_agent
         visual_creator_agent = self._visual_creator_agent
+        visual_explainer = self._visual_explainer
+
+        # Background tasks kicked off to stream per-visual explanations.
+        # We keep references so we can await them at the end of the run
+        # (so any in-flight delta makes it to the SSE stream before the
+        # framework iterator closes).
+        explanation_tasks: List[asyncio.Task] = []
+
+        def schedule_explanation(
+            visual_index: int,
+            user_question: str,
+            query: Dict[str, Any],
+            visual_config: Dict[str, Any],
+        ) -> None:
+            """Kick off a streaming explanation for one visual as a background task.
+
+            No-op when no explainer is configured. Errors inside the
+            explainer are logged and swallowed by the explainer itself.
+            """
+            if visual_explainer is None:
+                return
+            rows = query.get("rows", []) or []
+            if not rows:
+                return
+            task = asyncio.create_task(
+                visual_explainer.stream_explanation(
+                    custom_event_queue=custom_event_queue,
+                    visual_index=visual_index,
+                    user_question=user_question,
+                    dax=query.get("dax", ""),
+                    rows=rows,
+                    visual_config=visual_config,
+                )
+            )
+            explanation_tasks.append(task)
 
         # ------------------------------------------------------------------
         # Helper: build a single-element InlineVisuals payload from one
         # captured DAX query + rows by asking the visual creator agent
-        # for a sensible chart config.
+        # for a sensible chart config. Also kicks off a per-visual
+        # explanation stream so the user sees prose alongside the chart.
         # ------------------------------------------------------------------
         async def push_visual_for_query(
             user_message: str,
             query: Dict[str, Any],
-        ) -> None:
+            visual_index: int,
+        ) -> bool:
+            """Push one InlineVisuals payload and schedule its explanation.
+
+            Returns True when a visual was actually emitted.
+            """
             rows = query.get("rows", []) or []
             if not rows:
-                return
+                return False
             try:
                 suggested = await visual_creator_agent.suggest_visual_for_rows(
                     user_message=user_message,
@@ -144,18 +192,27 @@ class RouterAgent(BaseAgent):
                 )
             except Exception as exc:  # noqa: BLE001 - visuals are best-effort
                 logger.warning(f"Inline visual suggestion failed: {exc}")
-                return
+                return False
             if suggested is None:
-                return
+                return False
+            visual_config_dict = suggested.model_dump()
             await custom_event_queue.put((
                 "inline_visuals",
                 {
                     "visuals": [{
-                        "config": suggested.model_dump(),
+                        "config": visual_config_dict,
                         "data": rows,
                     }],
+                    "visual_index": visual_index,
                 },
             ))
+            schedule_explanation(
+                visual_index=visual_index,
+                user_question=user_message,
+                query=query,
+                visual_config=visual_config_dict,
+            )
+            return True
 
         # ------------------------------------------------------------------
         # Tool 1: execute_dax_query directly from the router so simple
@@ -190,7 +247,9 @@ class RouterAgent(BaseAgent):
             # Best-effort inline visual. We do this BEFORE returning so
             # the visual chip lands in the timeline ahead of the answer
             # bubble that the model produces from this tool result.
-            await push_visual_for_query(user_message, {"dax": dax, "rows": parsed})
+            # The router's direct DAX path emits one visual at most per
+            # tool call, so the visual_index is always 0 here.
+            await push_visual_for_query(user_message, {"dax": dax, "rows": parsed}, visual_index=0)
             return result
 
         # ------------------------------------------------------------------
@@ -239,12 +298,18 @@ class RouterAgent(BaseAgent):
 
             # Track which captured queries we've already turned into
             # visuals so the final fallback emit doesn't double up.
+            # ``visual_counter`` is a mutable wrapper so the nested
+            # ``on_query_captured`` callback can increment it.
             pushed_query_keys: set = set()
+            visual_counter = {"n": 0}
 
             async def on_query_captured(query: Dict[str, Any]) -> None:
                 key = id(query)
                 pushed_query_keys.add(key)
-                await push_visual_for_query(question, query)
+                current_index = visual_counter["n"]
+                emitted = await push_visual_for_query(question, query, visual_index=current_index)
+                if emitted:
+                    visual_counter["n"] += 1
 
             async def on_reasoning_delta(delta_text: str) -> None:
                 # Use the dedicated ``deep_reasoning`` payload kind so
@@ -308,7 +373,8 @@ class RouterAgent(BaseAgent):
 
             # Safety net: if any captured query wasn't pushed via the
             # interim callback (shouldn't normally happen), aggregate
-            # what's left into a single trailing InlineVisuals payload.
+            # what's left into a single trailing InlineVisuals payload
+            # and dispatch a per-visual explanation for each one.
             leftover = [q for q in captured_queries if id(q) not in pushed_query_keys]
             if leftover:
                 try:
@@ -317,20 +383,43 @@ class RouterAgent(BaseAgent):
                         queries=leftover,
                     )
                     visuals: List[Dict[str, Any]] = []
+                    trailing_pairs: List[Tuple[int, Dict[str, Any], Dict[str, Any]]] = []
                     for query, suggested in zip(leftover, suggested_configs):
                         if suggested is None:
                             continue
+                        visual_config_dict = suggested.model_dump()
                         visuals.append({
-                            "config": suggested.model_dump(),
+                            "config": visual_config_dict,
                             "data": query.get("rows", []),
                         })
+                        idx = visual_counter["n"]
+                        visual_counter["n"] += 1
+                        trailing_pairs.append((idx, query, visual_config_dict))
                     if visuals:
                         await custom_event_queue.put((
                             "inline_visuals",
                             {"visuals": visuals},
                         ))
+                        for idx, query, visual_config_dict in trailing_pairs:
+                            schedule_explanation(
+                                visual_index=idx,
+                                user_question=question,
+                                query=query,
+                                visual_config=visual_config_dict,
+                            )
                 except Exception as exc:  # noqa: BLE001 - visuals are best-effort
                     logger.warning(f"Trailing inline visual suggestion failed: {exc}")
+
+            # Wait for any in-flight explanation streams to finish so
+            # their tokens make it onto the SSE stream before the deep
+            # tool returns and the framework moves on.
+            if explanation_tasks:
+                pending = [t for t in explanation_tasks if not t.done()]
+                if pending:
+                    try:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                    except Exception as exc:  # noqa: BLE001 - best-effort
+                        logger.debug(f"Awaiting explanation tasks raised: {exc}")
 
             return answer_text or ""
 
