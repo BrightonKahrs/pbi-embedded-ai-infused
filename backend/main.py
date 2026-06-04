@@ -259,27 +259,44 @@ async def clear_chat_history():
     return {"message": "Chat history cleared"}
 
 
-def _drain_custom_events(
-    queue: "asyncio.Queue[tuple[str, Dict[str, Any]]]",
-    encoder: EventEncoder,
-):
-    """Drain pending router-emitted CUSTOM events from ``queue`` and encode them.
+def _make_custom_event(kind: str, payload: Dict[str, Any]) -> CustomEvent:
+    """Wrap a router-emitted ``(kind, payload)`` tuple into an AG-UI ``CustomEvent``.
 
-    Generator so callers can ``yield from`` it between framework events
-    in the SSE pipeline. Each payload pushed by the router agent is
-    wrapped as the appropriate AG-UI ``CustomEvent`` and SSE-encoded.
+    Each ``kind`` produced by the router agent maps to a stable
+    ``CustomEvent.name`` the frontend recognises:
+
+    * ``"handoff"``        -> ``AgentHandoff``
+    * ``"inline_visuals"`` -> ``InlineVisuals``
+    * ``"reasoning"``      -> ``Reasoning`` (live deep-agent thinking)
     """
-    while not queue.empty():
-        try:
-            kind, payload = queue.get_nowait()
-        except asyncio.QueueEmpty:
-            return
-        if kind == "handoff":
-            yield encoder.encode(CustomEvent(name="AgentHandoff", value=payload))
-        elif kind == "inline_visuals":
-            yield encoder.encode(CustomEvent(name="InlineVisuals", value=payload))
-        else:
-            logger.warning(f"Unknown router custom-event kind: {kind}")
+    if kind == "handoff":
+        return CustomEvent(name="AgentHandoff", value=payload)
+    if kind == "inline_visuals":
+        return CustomEvent(name="InlineVisuals", value=payload)
+    if kind == "reasoning":
+        return CustomEvent(name="Reasoning", value=payload)
+    logger.warning(f"Unknown router custom-event kind: {kind}")
+    return CustomEvent(name=kind, value=payload)
+
+
+# Sentinel returned by ``_safe_anext`` when the framework iterator
+# exhausts. Using an object()-based sentinel keeps it cheaply
+# distinguishable from any AG-UI event class.
+_SENTINEL_END = object()
+
+
+async def _safe_anext(iterator):
+    """``anext`` that swallows ``StopAsyncIteration`` and returns ``_SENTINEL_END``.
+
+    We need this because the SSE generator races the framework iterator
+    against the custom-event queue using ``asyncio.wait``; turning the
+    natural ``StopAsyncIteration`` into a regular return value lets us
+    treat "framework finished" as just another future result.
+    """
+    try:
+        return await iterator.__anext__()
+    except StopAsyncIteration:
+        return _SENTINEL_END
 
 
 @app.post("/api/chat/stream", tags=["AG-UI"])
@@ -290,12 +307,23 @@ async def chat_stream(request_body: Dict[str, Any]) -> StreamingResponse:
     minimum ``{"messages": [{"role": "user", "content": "..."}]}``.
     Responds with a ``text/event-stream`` where each ``data:`` line is a
     JSON-encoded AG-UI event (RUN_STARTED, TEXT_MESSAGE_*, TOOL_CALL_*,
-    CUSTOM, etc.). The router agent additionally emits two CUSTOM event
+    CUSTOM, etc.). The router agent additionally emits three CUSTOM event
     families that the front-end recognises:
 
-    * ``AgentHandoff`` — fires when routing to the deep DAX agent.
+    * ``AgentHandoff`` — fires the moment routing to the deep DAX agent
+      begins, BEFORE the deep run completes.
     * ``InlineVisuals`` — carries one or more ``InlineVisual`` configs
-      so the chat can render a Recharts/Power BI preview inline.
+      so the chat can render a Recharts/Power BI preview inline. Emitted
+      per captured DAX query as the deep agent works.
+    * ``Reasoning`` — streams the deep agent's reasoning summary as the
+      model thinks.
+
+    The generator interleaves framework events with router queue events
+    by racing the next framework event against the next queue item with
+    ``asyncio.wait(..., FIRST_COMPLETED)``. This means a queue payload
+    pushed from inside a tool (e.g. the ``AgentHandoff`` we emit at the
+    start of ``route_to_deep_analysis``) reaches the client immediately
+    instead of being held until the tool returns.
     """
     if not isinstance(request_body, dict) or not request_body.get("messages"):
         raise HTTPException(status_code=400, detail="Request body must include 'messages'.")
@@ -307,27 +335,57 @@ async def chat_stream(request_body: Dict[str, Any]) -> StreamingResponse:
 
     async def event_generator():
         event_count = 0
+        fw_iter = run_agent_stream(request_body, agent, config).__aiter__()
+        fw_task: Optional[asyncio.Task] = asyncio.ensure_future(_safe_anext(fw_iter))
+        q_task: Optional[asyncio.Task] = asyncio.ensure_future(custom_event_queue.get())
         try:
-            async for event in run_agent_stream(request_body, agent, config):
-                # Flush any router-emitted CUSTOM events ahead of the next framework event.
-                for encoded in _drain_custom_events(custom_event_queue, encoder):
-                    yield encoded
-                event_count += 1
-                try:
-                    yield encoder.encode(event)
-                except Exception as encode_error:  # noqa: BLE001
-                    logger.exception("Failed to encode AG-UI event")
+            while True:
+                done, _pending = await asyncio.wait(
+                    {fw_task, q_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                # Queue items take precedence in this iteration so
+                # router-emitted CUSTOM events appear ahead of the
+                # framework event that completed in the same tick.
+                if q_task in done:
+                    kind, payload = q_task.result()
+                    yield encoder.encode(_make_custom_event(kind, payload))
+                    q_task = asyncio.ensure_future(custom_event_queue.get())
+
+                if fw_task in done:
+                    event = fw_task.result()
+                    if event is _SENTINEL_END:
+                        # Framework finished — drain any remaining
+                        # queued payloads and stop. Cancel the pending
+                        # queue waiter first so it doesn't leak.
+                        if q_task is not None and not q_task.done():
+                            q_task.cancel()
+                            try:
+                                await q_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                        while not custom_event_queue.empty():
+                            try:
+                                kind, payload = custom_event_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
+                            yield encoder.encode(_make_custom_event(kind, payload))
+                        break
+                    event_count += 1
                     try:
-                        yield encoder.encode(RunErrorEvent(
-                            message="Internal error while streaming events.",
-                            code=type(encode_error).__name__,
-                        ))
-                    except Exception:
-                        pass
-                    return
-            # Drain anything the tool put on the queue after the final framework event.
-            for encoded in _drain_custom_events(custom_event_queue, encoder):
-                yield encoded
+                        yield encoder.encode(event)
+                    except Exception as encode_error:  # noqa: BLE001
+                        logger.exception("Failed to encode AG-UI event")
+                        try:
+                            yield encoder.encode(RunErrorEvent(
+                                message="Internal error while streaming events.",
+                                code=type(encode_error).__name__,
+                            ))
+                        except Exception:
+                            pass
+                        return
+                    fw_task = asyncio.ensure_future(_safe_anext(fw_iter))
             logger.info(f"[/api/chat/stream] streamed {event_count} events")
         except Exception as stream_err:  # noqa: BLE001
             logger.exception("[/api/chat/stream] streaming failed")
@@ -338,6 +396,16 @@ async def chat_stream(request_body: Dict[str, Any]) -> StreamingResponse:
                 ))
             except Exception:
                 pass
+        finally:
+            # Belt-and-braces task cleanup so a client disconnect never
+            # leaks the queue-waiter or framework-iterator task.
+            for t in (fw_task, q_task):
+                if t is not None and not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
 
     return StreamingResponse(
         event_generator(),
