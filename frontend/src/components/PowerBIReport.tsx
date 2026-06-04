@@ -67,7 +67,10 @@ const PowerBIReport: React.FC<PowerBIReportProps> = ({ reportId, visualId, pageN
             panes: {
               filters: {
                 expanded: false,
-                visible: true
+                visible: false
+              },
+              pageNavigation: {
+                visible: false
               }
             },
             background: models.BackgroundType.Transparent,

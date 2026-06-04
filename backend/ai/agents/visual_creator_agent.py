@@ -1,7 +1,7 @@
 import json
 import logging
 
-from agent_framework import Agent, Message, ChatOptions
+from agent_framework import Agent, ChatOptions
 
 from ai.ai_config import config
 from models.visual_models import VisualConfig
@@ -71,11 +71,6 @@ class VisualCreatorAgent(BaseAgent):
         if not self._client:
             raise RuntimeError("VisualCreatorAgent not started. Call start() first.")
 
-        messages = [
-            Message(role="system", text=system_instructions),
-            Message(role="user", text=user_message),
-        ]
-
         agent = Agent(
             client=self._client,
             name="VisualCreatorAgent",
@@ -84,7 +79,7 @@ class VisualCreatorAgent(BaseAgent):
             default_options=ChatOptions(response_format=VisualConfig),
         )
 
-        result = await agent.run(messages=messages)
+        result = await agent.run(messages=user_message)
 
         if isinstance(result.value, VisualConfig):
             logger.info(f"Generated Visual Config: {result.value.model_dump_json()}")

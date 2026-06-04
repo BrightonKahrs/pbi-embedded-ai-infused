@@ -26,6 +26,9 @@ class Config:
         ]
 
         # Power BI data model schema
+        # NOTE: Types below have been verified against the live model. In particular,
+        # Calendar[Month] is an INTEGER (1-12), NOT a month-name string. Compare it
+        # with numeric literals (e.g., = 10) — never with text like "October".
         self.data_model_schema =  """
             Tables and Columns:
 
@@ -67,8 +70,8 @@ class Config:
             Table: Calendar
             • Calendar[Date] (dateTime)
             • Calendar[Year] (int64)
-            • Calendar[Month] (string)
-            • Calendar[Quarter] (string)
+            • Calendar[Month] (int64)  -- 1=January ... 12=December. Compare numerically.
+            • Calendar[Quarter] (string) -- e.g., "Q1", "Q2"
         """
 
 config = Config()

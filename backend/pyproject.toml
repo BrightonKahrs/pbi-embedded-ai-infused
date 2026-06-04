@@ -5,19 +5,22 @@ description = "Power BI Embedded with AI Agent Chat"
 requires-python = ">=3.10"
 dependencies = [
     # Agent Framework
-    "agent-framework>=1.0.0rc2",
-    "agent-framework-azure-ai>=1.0.0rc2",
+    "agent-framework>=1.7.0",
+    "agent-framework-azure-ai>=1.0.0rc6",
+    "agent-framework-foundry>=1.7.0",
     "agent-framework-devui",
     # Web framework (from toml)
     "fastapi>=0.128.0",
     "uvicorn[standard]>=0.30.0",
     # Config / validation (from toml)
-    "pydantic>=2.0",
+    # NOTE: pin pydantic <2.13 — the 2.13 betas ship a MockValSer placeholder
+    # that breaks the openai SDK's Response.to_dict() during structured output.
+    "pydantic>=2.12,<2.13",
     "pydantic-settings>=2.6.1",
-    "python-dotenv>=1.0",
-    # Azure SDKs
+    "python-dotenv>=1.0",    # Azure SDKs
     "azure-identity>=1.19.0",
     "azure-ai-agents>=1.2.0b5",
+    "azure-ai-projects>=2.2.0",
     "azure-cosmos>=4.7.0",
     # HTTP / networking (from toml + requirements.txt)
     "httpx>=0.27",

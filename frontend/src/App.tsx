@@ -208,6 +208,17 @@ function App() {
     try {
       const pages = await report.getPages();
       console.log('Discovering visuals from', pages.length, 'pages...');
+
+      // Default to the "Overview" page if it exists and isn't already active
+      const overviewPage = pages.find(p => p.displayName === 'Overview');
+      if (overviewPage && !overviewPage.isActive) {
+        try {
+          await overviewPage.setActive();
+          console.log('Set active page to "Overview"');
+        } catch (activateErr) {
+          console.warn('Could not set Overview as active page:', activateErr);
+        }
+      }
       
       const visualsMap = new Map<string, any[]>();
       const pagesInfo: any[] = [];
@@ -380,10 +391,10 @@ function App() {
               </div>
             </div>
           ) : (
-            /* Render full report - edit mode enabled for visual authoring */
+            /* Render full report in view mode, defaulting to the Overview page */
             <PowerBIReport 
               embedType={embedType}
-              editMode={true}
+              editMode={false}
               onReportLoaded={handleReportLoaded}
             />
           )}
