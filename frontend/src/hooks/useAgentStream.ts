@@ -334,6 +334,7 @@ export function useAgentStream(
           }
           return;
         }
+        case "DeepToolStart":
         case "deep_tool_start": {
           if (!value) return;
           const payload = value as DeepToolStartPayload;
@@ -357,6 +358,7 @@ export function useAgentStream(
           });
           return;
         }
+        case "DeepToolEnd":
         case "deep_tool_end": {
           if (!value) return;
           const payload = value as DeepToolEndPayload;
@@ -376,6 +378,7 @@ export function useAgentStream(
         }
         case "Reasoning":
         case "reasoning":
+        case "DeepReasoning":
         case "deep_reasoning": {
           if (!value) return;
           const payload = value as (DeepReasoningPayload & ReasoningCustomPayload) | undefined;
