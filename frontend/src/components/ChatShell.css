@@ -93,12 +93,35 @@
 }
 
 /* Fullscreen mode -------------------------------------------------------- */
+/* True full-viewport overlay: covers everything (including the purple
+   App header), edge-to-edge with no border-radius and no margin so the
+   chat is the only thing visible. The header/composer stay pinned and
+   only the messages body scrolls because the existing .chat-shell
+   layout uses flex with min-height: 0. */
 .chat-shell-fullscreen {
   position: fixed;
-  inset: 24px;
-  z-index: 1001;
-  border-radius: 16px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
+  max-height: 100vh;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  z-index: 9999;
+  box-sizing: border-box;
+}
+
+/* Make sure the header stretches across the full width and the close
+   button isn't clipped off the right edge in fullscreen. */
+.chat-shell-fullscreen .chat-shell-header {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .chat-shell-backdrop {
@@ -106,7 +129,7 @@
   inset: 0;
   background: rgba(15, 23, 42, 0.45);
   backdrop-filter: blur(2px);
-  z-index: 1000;
+  z-index: 9998;
   animation: chat-shell-fade-in 200ms ease;
 }
 
@@ -172,11 +195,6 @@
 }
 
 @media (max-width: 768px) {
-  .chat-shell-fullscreen {
-    inset: 0;
-    border-radius: 0;
-  }
-
   .chat-shell-launcher {
     right: 16px;
     bottom: 16px;
