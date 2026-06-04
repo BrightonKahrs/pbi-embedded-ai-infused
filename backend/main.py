@@ -20,6 +20,7 @@ from pbi.generate_pbi_token import PowerBITokenGenerator
 from ai.agents.dax_agent import DaxAgent
 from ai.agents.router_agent import RouterAgent
 from ai.agents.visual_creator_agent import VisualCreatorAgent
+from ai.agents.visual_explainer import VisualExplainer
 from ai.event_recorder import EventRecorder
 from models.response_models import (
     ChatRequest,
@@ -47,8 +48,16 @@ logger = logging.getLogger(__name__)
 # Shared agent instances
 dax_agent = DaxAgent()
 visual_creator_agent = VisualCreatorAgent()
+# Fast helper that streams short prose explanations for each visual the
+# deep agent produces. Shared so the underlying Foundry client/credential
+# is reused across requests.
+visual_explainer = VisualExplainer()
 # Fast triage/router agent — owns the routing tool that delegates to dax_agent.
-router_agent = RouterAgent(dax_agent=dax_agent, visual_creator_agent=visual_creator_agent)
+router_agent = RouterAgent(
+    dax_agent=dax_agent,
+    visual_creator_agent=visual_creator_agent,
+    visual_explainer=visual_explainer,
+)
 
 
 # In-memory conversation history (in production, use a database)
@@ -61,16 +70,19 @@ async def lifespan(app: FastAPI):
     # Startup
     await dax_agent.start()
     await visual_creator_agent.start()
+    await visual_explainer.start()
     await router_agent.start()
     await initialize_pbi_token()
     # Expose agents on app.state for endpoints that prefer DI over module globals.
     app.state.dax_agent = dax_agent
     app.state.visual_creator_agent = visual_creator_agent
+    app.state.visual_explainer = visual_explainer
     app.state.router_agent = router_agent
     yield
     # Shutdown
     await dax_agent.stop()
     await visual_creator_agent.stop()
+    await visual_explainer.stop()
     await router_agent.stop()
 
 app = FastAPI(
@@ -265,12 +277,14 @@ def _make_custom_event(kind: str, payload: Dict[str, Any]) -> CustomEvent:
     Each ``kind`` produced by the router agent maps to a stable
     ``CustomEvent.name`` the frontend recognises:
 
-    * ``"handoff"``          -> ``AgentHandoff``
-    * ``"inline_visuals"``   -> ``InlineVisuals``
-    * ``"reasoning"``        -> ``Reasoning`` (router-emitted reasoning, if any)
-    * ``"deep_reasoning"``   -> ``DeepReasoning`` (live deep-agent thinking)
-    * ``"deep_tool_start"``  -> ``DeepToolStart`` (nested tool-call begin)
-    * ``"deep_tool_end"``    -> ``DeepToolEnd`` (nested tool-call complete)
+    * ``"handoff"``                    -> ``AgentHandoff``
+    * ``"inline_visuals"``             -> ``InlineVisuals``
+    * ``"reasoning"``                  -> ``Reasoning`` (router-emitted reasoning, if any)
+    * ``"deep_reasoning"``             -> ``DeepReasoning`` (live deep-agent thinking)
+    * ``"deep_tool_start"``            -> ``DeepToolStart`` (nested tool-call begin)
+    * ``"deep_tool_end"``              -> ``DeepToolEnd`` (nested tool-call complete)
+    * ``"visual_explanation_delta"``   -> ``VisualExplanationDelta`` (per-visual prose deltas)
+    * ``"visual_explanation_end"``     -> ``VisualExplanationEnd`` (per-visual prose end marker)
     """
     if kind == "handoff":
         return CustomEvent(name="AgentHandoff", value=payload)
@@ -284,28 +298,12 @@ def _make_custom_event(kind: str, payload: Dict[str, Any]) -> CustomEvent:
         return CustomEvent(name="DeepToolStart", value=payload)
     if kind == "deep_tool_end":
         return CustomEvent(name="DeepToolEnd", value=payload)
+    if kind == "visual_explanation_delta":
+        return CustomEvent(name="VisualExplanationDelta", value=payload)
+    if kind == "visual_explanation_end":
+        return CustomEvent(name="VisualExplanationEnd", value=payload)
     logger.warning(f"Unknown router custom-event kind: {kind}")
     return CustomEvent(name=kind, value=payload)
-
-
-# Sentinel returned by ``_safe_anext`` when the framework iterator
-# exhausts. Using an object()-based sentinel keeps it cheaply
-# distinguishable from any AG-UI event class.
-_SENTINEL_END = object()
-
-
-async def _safe_anext(iterator):
-    """``anext`` that swallows ``StopAsyncIteration`` and returns ``_SENTINEL_END``.
-
-    We need this because the SSE generator races the framework iterator
-    against the custom-event queue using ``asyncio.wait``; turning the
-    natural ``StopAsyncIteration`` into a regular return value lets us
-    treat "framework finished" as just another future result.
-    """
-    try:
-        return await iterator.__anext__()
-    except StopAsyncIteration:
-        return _SENTINEL_END
 
 
 @app.post("/api/chat/stream", tags=["AG-UI"])
@@ -331,12 +329,18 @@ async def chat_stream(request_body: Dict[str, Any]) -> StreamingResponse:
       ``inspect_data_model_tool``), so the timeline can show what the
       deep agent is doing as it happens.
 
-    The generator interleaves framework events with router queue events
-    by racing the next framework event against the next queue item with
-    ``asyncio.wait(..., FIRST_COMPLETED)``. This means a queue payload
-    pushed from inside a tool (e.g. the ``AgentHandoff`` we emit at the
-    start of ``route_to_deep_analysis``) reaches the client immediately
-    instead of being held until the tool returns.
+    The generator pulls from two queues: a ``framework_queue`` fed by a
+    single long-lived drain task that owns the entire lifetime of the
+    framework's async iterator, and the per-request ``custom_event_queue``
+    that the router agent pushes CUSTOM events onto. Keeping the
+    framework iterator pinned to a single task is required because
+    ``agent_framework`` stores ContextVar tokens (e.g.
+    ``INNER_RESPONSE_TELEMETRY_CAPTURED_FIELDS``) during one
+    ``__anext__`` call and resets them in a later one. If those calls
+    ran in different ``asyncio.Task`` contexts (e.g. when
+    ``asyncio.ensure_future(iterator.__anext__())`` is called in a loop)
+    the framework's cleanup hook would raise ``ValueError: Token was
+    created in a different Context``.
     """
     if not isinstance(request_body, dict) or not request_body.get("messages"):
         raise HTTPException(status_code=400, detail="Request body must include 'messages'.")
@@ -348,46 +352,82 @@ async def chat_stream(request_body: Dict[str, Any]) -> StreamingResponse:
 
     async def event_generator():
         event_count = 0
-        fw_iter = run_agent_stream(request_body, agent, config).__aiter__()
-        fw_task: Optional[asyncio.Task] = asyncio.ensure_future(_safe_anext(fw_iter))
-        q_task: Optional[asyncio.Task] = asyncio.ensure_future(custom_event_queue.get())
+        # Internal sentinels for the framework drain queue. A tuple
+        # (kind, payload) protocol lets us tell normal events apart from
+        # the "stream ended" or "stream errored" terminals without
+        # mixing types.
+        framework_queue: "asyncio.Queue[tuple[str, Any]]" = asyncio.Queue()
+        end_sentinel = object()
+
+        async def drain_framework() -> None:
+            """Own the framework iterator from a single task context.
+
+            All ``__anext__`` calls on ``run_agent_stream`` happen inside
+            this coroutine, so ContextVar tokens that the framework sets
+            during one chunk and resets during a later chunk stay inside
+            the same Task context.
+            """
+            try:
+                async for event in run_agent_stream(request_body, agent, config):
+                    await framework_queue.put(("event", event))
+            except Exception as exc:  # noqa: BLE001 - forwarded to caller
+                await framework_queue.put(("error", exc))
+            finally:
+                await framework_queue.put(("end", end_sentinel))
+
+        fw_drain_task = asyncio.create_task(drain_framework())
+        fw_get: Optional[asyncio.Task] = asyncio.create_task(framework_queue.get())
+        q_get: Optional[asyncio.Task] = asyncio.create_task(custom_event_queue.get())
+
         try:
             while True:
                 done, _pending = await asyncio.wait(
-                    {fw_task, q_task},
+                    {fw_get, q_get},
                     return_when=asyncio.FIRST_COMPLETED,
                 )
 
-                # Queue items take precedence in this iteration so
-                # router-emitted CUSTOM events appear ahead of the
-                # framework event that completed in the same tick.
-                if q_task in done:
-                    kind, payload = q_task.result()
+                # Queue items take precedence so router-emitted CUSTOM
+                # events land ahead of any framework event that completed
+                # in the same tick.
+                if q_get in done:
+                    kind, payload = q_get.result()
                     yield encoder.encode(_make_custom_event(kind, payload))
-                    q_task = asyncio.ensure_future(custom_event_queue.get())
+                    q_get = asyncio.create_task(custom_event_queue.get())
 
-                if fw_task in done:
-                    event = fw_task.result()
-                    if event is _SENTINEL_END:
-                        # Framework finished — drain any remaining
-                        # queued payloads and stop. Cancel the pending
+                if fw_get in done:
+                    kind, payload = fw_get.result()
+                    if kind == "end":
+                        # Framework done — drain any remaining queued
+                        # CUSTOM payloads and stop. Cancel the pending
                         # queue waiter first so it doesn't leak.
-                        if q_task is not None and not q_task.done():
-                            q_task.cancel()
+                        if q_get is not None and not q_get.done():
+                            q_get.cancel()
                             try:
-                                await q_task
+                                await q_get
                             except (asyncio.CancelledError, Exception):
                                 pass
+                            q_get = None
                         while not custom_event_queue.empty():
                             try:
-                                kind, payload = custom_event_queue.get_nowait()
+                                ck, cp = custom_event_queue.get_nowait()
                             except asyncio.QueueEmpty:
                                 break
-                            yield encoder.encode(_make_custom_event(kind, payload))
+                            yield encoder.encode(_make_custom_event(ck, cp))
                         break
+                    if kind == "error":
+                        if q_get is not None and not q_get.done():
+                            q_get.cancel()
+                            try:
+                                await q_get
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                            q_get = None
+                        # Preserve upstream stack trace.
+                        raise payload
+                    # kind == "event"
                     event_count += 1
                     try:
-                        yield encoder.encode(event)
+                        yield encoder.encode(payload)
                     except Exception as encode_error:  # noqa: BLE001
                         logger.exception("Failed to encode AG-UI event")
                         try:
@@ -398,7 +438,7 @@ async def chat_stream(request_body: Dict[str, Any]) -> StreamingResponse:
                         except Exception:
                             pass
                         return
-                    fw_task = asyncio.ensure_future(_safe_anext(fw_iter))
+                    fw_get = asyncio.create_task(framework_queue.get())
             logger.info(f"[/api/chat/stream] streamed {event_count} events")
         except Exception as stream_err:  # noqa: BLE001
             logger.exception("[/api/chat/stream] streaming failed")
@@ -411,14 +451,21 @@ async def chat_stream(request_body: Dict[str, Any]) -> StreamingResponse:
                 pass
         finally:
             # Belt-and-braces task cleanup so a client disconnect never
-            # leaks the queue-waiter or framework-iterator task.
-            for t in (fw_task, q_task):
+            # leaks the queue-waiter, framework-queue-waiter, or the
+            # framework drain task.
+            for t in (fw_get, q_get):
                 if t is not None and not t.done():
                     t.cancel()
                     try:
                         await t
                     except (asyncio.CancelledError, Exception):
                         pass
+            if not fw_drain_task.done():
+                fw_drain_task.cancel()
+            try:
+                await fw_drain_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     return StreamingResponse(
         event_generator(),
