@@ -11,6 +11,7 @@ import {
 import { useAgentStreamContext } from '../contexts/AgentStreamContext';
 import { InlineVisualWire } from '../types/ag-ui';
 import InlinePowerBIVisual from './InlinePowerBIVisual';
+import MessageMarkdown from './MessageMarkdown';
 import './AIChat.css';
 
 export const GREETING =
@@ -246,6 +247,8 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
     return null;
   }
 
+  const isAssistant = message.role === 'assistant';
+
   return (
     <div className={`message ${message.role}`}>
       <div className="message-avatar">
@@ -254,7 +257,11 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
       <div className="message-content">
         {hasContent && (
           <div className="message-text">
-            {message.content}
+            {isAssistant ? (
+              <MessageMarkdown content={message.content} />
+            ) : (
+              message.content
+            )}
             {message.isStreaming && <span className="streaming-cursor">▍</span>}
           </div>
         )}
