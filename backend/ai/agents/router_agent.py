@@ -1,27 +1,32 @@
 """Fast entry/triage agent that routes deep analytical questions to the DAX agent.
 
-Feature 5 (multi-agent): every chat turn lands on this agent first. It uses
-a fast model with a tiny prompt to either answer simple greetings /
-clarifications directly OR call the ``route_to_deep_analysis`` tool, which
-internally invokes the existing :class:`DaxAgent` for any question that
-needs DAX over the Power BI model.
+Feature 5 (multi-agent): every chat turn lands on this agent first. It runs
+on a fast model with three tools so it can answer the common case (a
+single-shot DAX question) without paying the latency of the deep model.
+It only routes to the DAX deep-analysis agent when the question genuinely
+requires multi-step reasoning or several DAX queries.
 
-When the routing tool fires we push two ``CustomEvent``-shaped payloads
-onto a per-request queue:
+When the routing tool fires we push several ``CustomEvent``-shaped
+payloads onto a per-request queue:
 
 * ``AgentHandoff`` — emitted *before* the heavy DAX run starts so the UI
   can render a "Routed to Deep Analysis Agent" chip immediately.
-* ``InlineVisuals`` — emitted after the DAX agent returns, carrying the
-  inline ``VisualConfig`` previews produced by the visual creator agent.
+* ``InlineVisuals`` — emitted per captured DAX query (the deep agent
+  streams these as it works) and also when the router answers a simple
+  question directly via ``execute_dax_query``.
+* ``Reasoning`` — emitted as the deep agent streams its reasoning
+  summary so the UI can show the model's thinking live.
 
-The queue is drained by the SSE generator in ``main.py`` between
-framework events, so these payloads end up interleaved with the regular
-AG-UI ``RUN_*``/``TOOL_CALL_*`` event stream.
+The queue is drained by the SSE generator in ``main.py`` interleaved
+with framework events, so these payloads end up alongside the regular
+AG-UI ``RUN_*``/``TOOL_CALL_*`` event stream and appear immediately when
+they are pushed (not buffered until the next framework event).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Annotated, Any, Dict, List, Optional, Tuple
 
@@ -32,49 +37,55 @@ from ai.agents.base_agent import BaseAgent
 from ai.agents.dax_agent import DaxAgent
 from ai.agents.visual_creator_agent import VisualCreatorAgent
 from ai.ai_config import config
+from ai.tools.execute_dax_query_tool import execute_dax_query_tool
+from ai.tools.inspect_data_model_tool import inspect_data_model_tool
 
 
 logger = logging.getLogger(__name__)
 
 
-# Kept intentionally short — this agent should answer trivial things on
-# its own and route only when real analysis is needed. We DO include the
-# data-model schema below so it can answer meta-questions like "what
-# tables do you have?" without round-tripping to the deep agent. We do
-# NOT teach it how to write DAX; that belongs to the DAX agent.
+# The router now has three tools and uses the fast model to answer the
+# common case (single-shot DAX question) directly. Deep analysis is the
+# exception, not the default — we only route when the question really
+# needs multi-step reasoning or several queries.
 SYSTEM_INSTRUCTIONS = f"""\
-You are a fast triage assistant for a Power BI analytics chat.
+You are a fast Power BI analytics assistant. You have THREE tools:
 
-You have ONE tool:
-- route_to_deep_analysis(question: str, reason: str): hands the user's
-  question to a specialist DAX agent that knows the data model, writes
-  DAX, runs queries, and produces a charted answer. Use this whenever
-  the answer requires actually querying the Power BI model.
+TOOLS:
+- inspect_data_model() -> schema description
+- execute_dax_query(dax: str) -> result rows
+  Use for SINGLE-shot analytical questions you can answer with one
+  DAX query (sales by category, total profit by region, top 5
+  products by sales, count of orders this year, etc).
+- route_to_deep_analysis(question, reason)
+  Use ONLY when the question genuinely needs MULTI-STEP reasoning
+  or MULTIPLE DAX queries to answer (e.g. "compare growth across
+  regions and identify outliers", "which products drive the most
+  profit and why is that pattern shifting over time?").
 
-Data model schema (use this to answer meta-questions directly, without
-routing):
+DECISION RULES:
+1. Direct answer (no tool):
+   - greetings/thanks/who you are
+   - definitional questions (what is DAX/a slicer/etc)
+   - meta-questions about the data model — use inspect_data_model
+     and answer in prose
+2. execute_dax_query (default for analytical asks):
+   - "show me X by Y"
+   - "what's the total/avg/count of X"
+   - "top/bottom N X"
+   - "sales by category", "profit by region", etc.
+   After running, present the result with a 2-3 sentence summary.
+3. route_to_deep_analysis (rare):
+   - Only when 2+ DAX queries are clearly needed
+   - Only when multi-step reasoning is required
+   - Examples: anomaly investigation, year-over-year multi-dimensional
+     comparisons, "explain why X happened"
+
+When in doubt, prefer execute_dax_query over route_to_deep_analysis.
+The DAX schema is below — use it directly.
+
+Data model schema:
 {config.data_model_schema}
-
-Decision rules:
-1. Answer directly (do NOT call the tool) when the request is any of:
-   - greetings, thanks, who/what you are, what you can do, "help"
-   - meta questions about the data model schema (you have the schema
-     above — describe it)
-   - one-shot definitional questions ("what is DAX?", "what's a
-     slicer?")
-2. You MUST call route_to_deep_analysis whenever the answer requires:
-   - any DAX query against the model,
-   - comparison or aggregation of values from the data,
-   - identifying top/bottom items, trends, or anomalies,
-   - building any chart or visual,
-   - any multi-step reasoning ("which region grew fastest YoY?",
-     "what correlates with profit?", anything implying more than one
-     query).
-   Pass the user's question verbatim as `question` and a 1-sentence
-   `reason` explaining why this needs deep analysis.
-3. When the tool returns, present its answer to the user verbatim. Do
-   not re-summarize, do not add caveats, do not invent numbers. The
-   tool's answer is already the final analyst response.
 """
 
 
@@ -85,7 +96,8 @@ CustomEventPayload = Tuple[str, Dict[str, Any]]
 
 
 class RouterAgent(BaseAgent):
-    """Lightweight router that delegates analytical questions to the DAX agent."""
+    """Lightweight router that answers simple DAX questions directly and
+    delegates only the genuinely complex ones to the DAX deep-analysis agent."""
 
     def __init__(
         self,
@@ -109,6 +121,96 @@ class RouterAgent(BaseAgent):
         dax_agent = self._dax_agent
         visual_creator_agent = self._visual_creator_agent
 
+        # ------------------------------------------------------------------
+        # Helper: build a single-element InlineVisuals payload from one
+        # captured DAX query + rows by asking the visual creator agent
+        # for a sensible chart config.
+        # ------------------------------------------------------------------
+        async def push_visual_for_query(
+            user_message: str,
+            query: Dict[str, Any],
+        ) -> None:
+            rows = query.get("rows", []) or []
+            if not rows:
+                return
+            try:
+                suggested = await visual_creator_agent.suggest_visual_for_rows(
+                    user_message=user_message,
+                    rows=rows,
+                )
+            except Exception as exc:  # noqa: BLE001 - visuals are best-effort
+                logger.warning(f"Inline visual suggestion failed: {exc}")
+                return
+            if suggested is None:
+                return
+            await custom_event_queue.put((
+                "inline_visuals",
+                {
+                    "visuals": [{
+                        "config": suggested.model_dump(),
+                        "data": rows,
+                    }],
+                },
+            ))
+
+        # ------------------------------------------------------------------
+        # Tool 1: execute_dax_query directly from the router so simple
+        # single-shot analytical questions don't need to hop through the
+        # deep agent. After running we also fire off a visual suggestion
+        # so the chat shows an inline chart for the answer.
+        # ------------------------------------------------------------------
+        async def execute_dax_query(
+            dax: Annotated[
+                str,
+                Field(description="A complete EVALUATE DAX query to run against the Power BI semantic model."),
+            ],
+            user_message: Annotated[
+                str,
+                Field(
+                    description=(
+                        "The original natural-language user question. Used to pick a sensible inline visual."
+                    )
+                ),
+            ],
+        ) -> str:
+            """Run a single DAX query and emit an inline visual for the results."""
+            result = await execute_dax_query_tool(dax)
+            try:
+                parsed = json.loads(result)
+            except (json.JSONDecodeError, ValueError):
+                # Tool returned an error/string — nothing to chart.
+                return result
+            if not isinstance(parsed, list) or not parsed:
+                return result
+
+            # Best-effort inline visual. We do this BEFORE returning so
+            # the visual chip lands in the timeline ahead of the answer
+            # bubble that the model produces from this tool result.
+            await push_visual_for_query(user_message, {"dax": dax, "rows": parsed})
+            return result
+
+        # ------------------------------------------------------------------
+        # Tool 2: inspect_data_model. Thin pass-through so the router can
+        # answer meta-questions about the model without routing.
+        # ------------------------------------------------------------------
+        async def inspect_data_model(
+            target: Annotated[
+                str,
+                Field(description="What to introspect: 'columns' (default), 'tables', or 'measures'."),
+            ] = "columns",
+            table_name: Annotated[
+                Optional[str],
+                Field(description="Optional table name to filter results to a single table."),
+            ] = None,
+        ) -> str:
+            """Introspect the live Power BI semantic model (tables/columns/measures)."""
+            return await inspect_data_model_tool(target=target, table_name=table_name)
+
+        # ------------------------------------------------------------------
+        # Tool 3: route_to_deep_analysis. Reserved for genuinely complex
+        # questions. Streams interim per-query visuals and reasoning
+        # deltas through the custom-event queue.
+        # ------------------------------------------------------------------
         async def route_to_deep_analysis(
             question: Annotated[
                 str,
@@ -131,32 +233,52 @@ class RouterAgent(BaseAgent):
                 },
             ))
 
+            # Track which captured queries we've already turned into
+            # visuals so the final fallback emit doesn't double up.
+            pushed_query_keys: set = set()
+
+            async def on_query_captured(query: Dict[str, Any]) -> None:
+                key = id(query)
+                pushed_query_keys.add(key)
+                await push_visual_for_query(question, query)
+
+            async def on_reasoning_delta(delta_text: str) -> None:
+                await custom_event_queue.put((
+                    "reasoning",
+                    {"content": delta_text, "source": "deep-analysis"},
+                ))
+
             answer_text, captured_queries = await dax_agent.generate_dax_query(
                 user_query=question,
+                on_query_captured=on_query_captured,
+                on_reasoning_delta=on_reasoning_delta,
             )
 
-            visuals: List[Dict[str, Any]] = []
-            if captured_queries:
+            # Safety net: if any captured query wasn't pushed via the
+            # interim callback (shouldn't normally happen), aggregate
+            # what's left into a single trailing InlineVisuals payload.
+            leftover = [q for q in captured_queries if id(q) not in pushed_query_keys]
+            if leftover:
                 try:
                     suggested_configs = await visual_creator_agent.suggest_visuals_for_queries(
                         user_message=question,
-                        queries=captured_queries,
+                        queries=leftover,
                     )
-                    for query, suggested in zip(captured_queries, suggested_configs):
+                    visuals: List[Dict[str, Any]] = []
+                    for query, suggested in zip(leftover, suggested_configs):
                         if suggested is None:
                             continue
                         visuals.append({
                             "config": suggested.model_dump(),
                             "data": query.get("rows", []),
                         })
+                    if visuals:
+                        await custom_event_queue.put((
+                            "inline_visuals",
+                            {"visuals": visuals},
+                        ))
                 except Exception as exc:  # noqa: BLE001 - visuals are best-effort
-                    logger.warning(f"Inline visual suggestion failed: {exc}")
-
-            if visuals:
-                await custom_event_queue.put((
-                    "inline_visuals",
-                    {"visuals": visuals},
-                ))
+                    logger.warning(f"Trailing inline visual suggestion failed: {exc}")
 
             return answer_text or ""
 
@@ -164,6 +286,6 @@ class RouterAgent(BaseAgent):
             client=self._client,
             name="RouterAgent",
             instructions=SYSTEM_INSTRUCTIONS,
-            tools=[route_to_deep_analysis],
+            tools=[execute_dax_query, inspect_data_model, route_to_deep_analysis],
         )
         return agent

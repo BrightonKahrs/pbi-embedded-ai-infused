@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Annotated, Any, Dict, List, Optional, Tuple
+from typing import Annotated, Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from agent_framework import Agent
 from agent_framework._skills import SkillsProvider
@@ -67,6 +67,8 @@ class DaxAgent(BaseAgent):
         self,
         user_query: str,
         recorder: Optional[EventRecorder] = None,
+        on_query_captured: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+        on_reasoning_delta: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """Generate the DAX-driven answer for a user question.
 
@@ -81,6 +83,14 @@ class DaxAgent(BaseAgent):
         If ``recorder`` is provided, tool calls and a final ``REASONING``
         summary event are appended to it so callers can surface
         explainability data on the response.
+
+        ``on_query_captured`` is invoked (awaited) immediately after each
+        successful ``execute_dax_query_tool`` call so callers can emit
+        interim per-query visuals while the deep agent is still working.
+
+        ``on_reasoning_delta`` is invoked with the text of each reasoning
+        summary chunk emitted while streaming. Callers use it to surface
+        the deep agent's thinking in the chat as it happens.
         """
         self._ensure_client()
 
@@ -113,7 +123,13 @@ class DaxAgent(BaseAgent):
             try:
                 parsed = json.loads(result)
                 if isinstance(parsed, list):
-                    captured_queries.append({"dax": dax_query, "rows": parsed})
+                    captured = {"dax": dax_query, "rows": parsed}
+                    captured_queries.append(captured)
+                    if on_query_captured is not None:
+                        try:
+                            await on_query_captured(captured)
+                        except Exception as cb_exc:  # noqa: BLE001 - callback is best-effort
+                            logger.warning(f"on_query_captured callback failed: {cb_exc}")
             except (json.JSONDecodeError, ValueError):
                 # Tool returned an error string, not JSON rows — skip
                 # capture so the chat won't suggest a visual for it.
@@ -181,12 +197,40 @@ class DaxAgent(BaseAgent):
             context_providers=[self._skills_provider],
         )
 
-        result = await agent.run(messages=user_query)
+        # Ask the model for low-effort reasoning with concise summaries
+        # so we can stream "thinking" deltas into the chat. Streaming the
+        # response lets us forward `text_reasoning` content as it arrives
+        # via ``on_reasoning_delta`` without breaking the existing tool
+        # invocation flow.
+        run_options: Dict[str, Any] = {
+            "reasoning": {"effort": "low", "summary": "auto"},
+        }
+
+        stream = agent.run(
+            messages=user_query,
+            stream=True,
+            options=run_options,
+        )
+
+        async for update in stream:
+            contents = getattr(update, "contents", None) or []
+            for content in contents:
+                if getattr(content, "type", None) != "text_reasoning":
+                    continue
+                delta_text = getattr(content, "text", None)
+                if not delta_text or on_reasoning_delta is None:
+                    continue
+                try:
+                    await on_reasoning_delta(delta_text)
+                except Exception as cb_exc:  # noqa: BLE001 - callback is best-effort
+                    logger.warning(f"on_reasoning_delta callback failed: {cb_exc}")
+
+        result = await stream.get_final_response()
+        answer_text = result.text or ""
         logger.info(
-            f"DAX agent answer: {result.text} "
+            f"DAX agent answer: {answer_text} "
             f"(captured {len(captured_queries)} query result(s))"
         )
         if recorder is not None:
-            answer_text = result.text or ""
             recorder.add_reasoning({"answer_preview": answer_text[:160]})
-        return result.text, captured_queries
+        return answer_text, captured_queries
