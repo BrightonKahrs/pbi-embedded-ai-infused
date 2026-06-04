@@ -99,6 +99,20 @@
   max-width: 1800px;
   width: 100%;
   margin: 0 auto;
+  transition: grid-template-columns 280ms ease;
+}
+
+.App-content.chat-mode-docked {
+  grid-template-columns: 1fr 400px;
+}
+
+.App-content.chat-mode-minimized,
+.App-content.chat-mode-fullscreen {
+  grid-template-columns: 1fr;
+}
+
+.App-content.chat-mode-fullscreen .report-section {
+  display: none;
 }
 
 /* Tab controls styling */
@@ -159,9 +173,16 @@
 }
 
 @media (max-width: 1024px) {
-  .App-content {
+  .App-content,
+  .App-content.chat-mode-docked {
     grid-template-columns: 1fr;
     grid-template-rows: 1fr 400px;
+  }
+
+  .App-content.chat-mode-minimized,
+  .App-content.chat-mode-fullscreen {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
   }
 }
 
