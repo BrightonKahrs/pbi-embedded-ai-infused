@@ -28,6 +28,7 @@ import type {
 } from "../types/ag-ui";
 import { AGUIEventType, REQUEST_SENT_TYPE } from "../types/ag-ui";
 import { streamAgentResponse } from "../services/sseChatClient";
+import { apiService } from "../services/api";
 
 export interface StreamChatMessage {
   id: string;
@@ -78,7 +79,9 @@ interface UseAgentStreamReturn {
 const MAX_EVENTS = 1000;
 
 export interface UseAgentStreamOptions {
-  /** Override the SSE endpoint URL (defaults to /api/chat/stream). */
+  /** Override the SSE endpoint URL. Defaults to the backend's
+   *  /api/chat/stream resolved against API_BASE_URL (so it works in
+   *  CRA's dev server where the frontend is on :3000 and the API on :8000). */
   endpoint?: string;
   /** Optional seed message inserted at the top of the chat. */
   initialAssistantGreeting?: string;
@@ -87,7 +90,7 @@ export interface UseAgentStreamOptions {
 export function useAgentStream(
   options: UseAgentStreamOptions = {}
 ): UseAgentStreamReturn {
-  const endpoint = options.endpoint ?? "/api/chat/stream";
+  const endpoint = options.endpoint ?? apiService.getChatStreamUrl();
   const initialGreeting = options.initialAssistantGreeting;
 
   const [messages, setMessages] = useState<StreamChatMessage[]>(() =>
