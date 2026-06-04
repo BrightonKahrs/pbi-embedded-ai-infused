@@ -256,10 +256,15 @@ class DaxAgent(BaseAgent):
         )
 
         # Ask the model for low-effort reasoning with concise summaries
-        # so we can stream "thinking" deltas into the chat. Streaming the
-        # response lets us forward `text_reasoning` content as it arrives
-        # via ``on_reasoning_delta`` without breaking the existing tool
-        # invocation flow.
+        # so we can stream "thinking" deltas into the chat. The OpenAI
+        # Responses API (which the Foundry chat client wraps) expects
+        # ``reasoning={"effort": ..., "summary": ...}`` as a top-level
+        # option key — ``OpenAIChatOptions`` declares this as a typed
+        # field and the OpenAI chat client passes it through verbatim.
+        # When the deployment supports reasoning summaries the API
+        # streams ``response.reasoning_summary_text.delta`` events that
+        # the framework surfaces as ``Content`` items with
+        # ``type="text_reasoning"``.
         run_options: Dict[str, Any] = {
             "reasoning": {"effort": "low", "summary": "auto"},
         }
@@ -275,8 +280,21 @@ class DaxAgent(BaseAgent):
             for content in contents:
                 if getattr(content, "type", None) != "text_reasoning":
                     continue
-                delta_text = getattr(content, "text", None)
-                if not delta_text or on_reasoning_delta is None:
+                delta_text = self._extract_reasoning_text(content)
+                if on_reasoning_delta is None:
+                    continue
+                if not delta_text:
+                    # Defensive: reasoning content arrived but no text
+                    # could be extracted. Log enough context to debug
+                    # whether the framework is putting the text on a
+                    # different attribute (e.g. ``protected_data``) or
+                    # whether the model is returning encrypted-only
+                    # reasoning.
+                    logger.debug(
+                        "Reasoning content received without extractable text: "
+                        f"attrs={sorted(k for k in vars(content) if not k.startswith('_'))} "
+                        f"raw_type={type(getattr(content, 'raw_representation', None)).__name__}"
+                    )
                     continue
                 try:
                     await on_reasoning_delta(delta_text)
@@ -292,3 +310,24 @@ class DaxAgent(BaseAgent):
         if recorder is not None:
             recorder.add_reasoning({"answer_preview": answer_text[:160]})
         return answer_text, captured_queries
+
+    @staticmethod
+    def _extract_reasoning_text(content: Any) -> Optional[str]:
+        """Pull human-readable text from a ``text_reasoning`` ``Content``.
+
+        The OpenAI/Foundry chat client populates ``Content.text`` for
+        reasoning summary deltas (``response.reasoning_summary_text.delta``)
+        and full reasoning text events (``response.reasoning_text.delta``).
+        We also fall back to ``additional_properties['reasoning_text']``
+        which some upstream code paths surface — defensive against
+        framework version churn.
+        """
+        text = getattr(content, "text", None)
+        if isinstance(text, str) and text:
+            return text
+        extras = getattr(content, "additional_properties", None) or {}
+        for key in ("reasoning_text", "summary_text", "text"):
+            value = extras.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
