@@ -47,6 +47,37 @@ function App() {
   // Chat shell display mode (docked / minimized / fullscreen)
   const [chatMode, setChatMode] = useState<ChatMode>('docked');
 
+  // Tracks the visualId of the most recently pinned chat-suggested widget so
+  // we can scroll its tile into view and briefly flash it after the user
+  // clicks "+ Add to widgets" in the chat.
+  const [recentlyPinnedVisualId, setRecentlyPinnedVisualId] =
+    useState<string | null>(null);
+  const visualTileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // After a pin, scroll the new widget into view and remove the flash class
+  // once the highlight animation finishes.
+  useEffect(() => {
+    if (!recentlyPinnedVisualId) return;
+    // Wait one tick so the new tile is mounted before we scroll/highlight.
+    const t = window.setTimeout(() => {
+      const node = visualTileRefs.current.get(recentlyPinnedVisualId);
+      if (node) {
+        try {
+          node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch {
+          /* older browsers: ignore */
+        }
+      }
+    }, 50);
+    const clear = window.setTimeout(() => {
+      setRecentlyPinnedVisualId(null);
+    }, 2000);
+    return () => {
+      window.clearTimeout(t);
+      window.clearTimeout(clear);
+    };
+  }, [recentlyPinnedVisualId]);
+
   // Load available pages and visuals on component mount
   useEffect(() => {
     const loadPages = async () => {
@@ -303,7 +334,11 @@ function App() {
       setVisualIds(prev =>
         prev.includes(visualId) ? prev : [...prev, visualId]
       );
+      // Always jump to the Widgets tab so the user sees the freshly-pinned
+      // chart even if they were on the Full report.
       setEmbedType('visual');
+      // Flag the new tile so the UI can scroll to it and briefly highlight it.
+      setRecentlyPinnedVisualId(visualId);
     },
     [currentReport]
   );
@@ -400,7 +435,19 @@ function App() {
             <div className="multi-visual-container">
               <div className="multi-visual-grid">
                 {visualIds.map((visualId, index) => (
-                  <div key={visualId} className="visual-container">
+                  <div
+                    key={visualId}
+                    ref={node => {
+                      if (node) {
+                        visualTileRefs.current.set(visualId, node);
+                      } else {
+                        visualTileRefs.current.delete(visualId);
+                      }
+                    }}
+                    className={`visual-container${
+                      recentlyPinnedVisualId === visualId ? ' flash-new' : ''
+                    }`}
+                  >
                     <PowerBIReport 
                       embedType="visual"
                       visualId={visualId}
@@ -421,10 +468,13 @@ function App() {
               </div>
             </div>
           ) : (
-            /* Render full report in view mode, defaulting to the Overview page */
+            /* Render full report in hidden-edit mode so chat-suggested visuals
+               can be pinned via the authoring API without exposing edit chrome
+               to the user. Defaults to the Overview page. */
             <PowerBIReport 
               embedType={embedType}
-              editMode={false}
+              editMode={true}
+              hideEditBar={true}
               onReportLoaded={handleReportLoaded}
             />
           )}
