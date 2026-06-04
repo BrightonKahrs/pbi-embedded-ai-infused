@@ -18,6 +18,15 @@ export interface InlineVisual {
   data: Array<Record<string, any>>;
 }
 
+export interface AgentEvent {
+  id: string;
+  type: string;
+  timestamp: number;
+  name?: string | null;
+  details: Record<string, any>;
+  duration_ms?: number | null;
+}
+
 export interface ChatResponse {
   message: string;
   role: string;
@@ -25,6 +34,8 @@ export interface ChatResponse {
   visual?: InlineVisual | null;
   /** Zero or more inline visuals, one per DAX query the AI ran. */
   visuals?: InlineVisual[];
+  /** Per-turn agent activity events for the explainability panel. */
+  events?: AgentEvent[];
 }
 
 export interface VisualConfig {

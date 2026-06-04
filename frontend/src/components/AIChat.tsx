@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { apiService, ChatMessage, InlineVisual } from '../services/api';
+import { apiService, ChatMessage, InlineVisual, AgentEvent } from '../services/api';
 import InlineChart from './InlineChart';
+import ExplainabilityPanel from './ExplainabilityPanel'; // explainability:
 import './AIChat.css';
 
 // Local message shape that augments the wire-level ChatMessage with any
@@ -18,6 +19,8 @@ const AIChat: React.FC = () => {
   ]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [recentEvents, setRecentEvents] = useState<AgentEvent[]>([]); // explainability:
+  const [explainOpen, setExplainOpen] = useState(false); // explainability:
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -46,6 +49,8 @@ const AIChat: React.FC = () => {
       const response = await apiService.sendChatMessage({
         messages: [...messages, userMessage].map(({ role, content }) => ({ role, content }))
       });
+
+      setRecentEvents(response.events ?? []); // explainability:
 
       // Prefer the new plural field; fall back to the legacy single
       // `visual` for backwards compatibility.
@@ -91,6 +96,7 @@ const AIChat: React.FC = () => {
     <div className="ai-chat-container">
       <div className="chat-header">
         <h3>💬 AI Assistant</h3>
+        <button onClick={() => setExplainOpen(true)} className="clear-button" title="Explain what the AI is doing" style={{ marginRight: 8 }}>🧠 Explain</button>{/* explainability: */}
         <button onClick={handleClearChat} className="clear-button" title="Clear conversation">
           🗑️ Clear
         </button>
@@ -152,6 +158,7 @@ const AIChat: React.FC = () => {
           ➤
         </button>
       </form>
+      <ExplainabilityPanel events={recentEvents} isOpen={explainOpen} onClose={() => setExplainOpen(false)} />{/* explainability: */}
     </div>
   );
 };

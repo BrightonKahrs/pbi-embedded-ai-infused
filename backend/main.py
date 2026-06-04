@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pbi.generate_pbi_token import PowerBITokenGenerator
 from ai.agents.dax_agent import DaxAgent
 from ai.agents.visual_creator_agent import VisualCreatorAgent
+from ai.event_recorder import EventRecorder
 from models.response_models import (
     ChatRequest,
     ChatResponse,
@@ -169,20 +170,29 @@ async def chat_with_agent(request: ChatRequest):
         user_message = request.messages[-1] if request.messages else None
         if not user_message:
             raise HTTPException(status_code=400, detail="No message provided")
-        
+
         # Store conversation
         conversation_history.append({
             "role": user_message.role,
             "content": user_message.content
         })
-        
-        # Get response from DAX agent. The agent returns the prose
-        # answer plus a list of every DAX query it executed (one entry
-        # per captured result set) so we can render one inline chart
-        # per query.
-        answer_text, captured_queries = await dax_agent.generate_dax_query(
-            user_query=user_message.content
-        )
+        # Record what the agent does this turn so the front-end can show
+        # the AG-UI-style explainability panel.
+        recorder = EventRecorder()
+        recorder.start_run()
+
+        try:
+            # Get response from DAX agent. The agent returns the prose
+            # answer plus a list of every DAX query it executed (one
+            # entry per captured result set) so we can render one inline
+            # chart per query.
+            answer_text, captured_queries = await dax_agent.generate_dax_query(
+                user_query=user_message.content,
+                recorder=recorder,
+            )
+        except Exception:
+            recorder.end_run(success=False, error="DAX agent failed")
+            raise
 
         visuals: list[InlineVisual] = []
         if captured_queries:
@@ -208,11 +218,14 @@ async def chat_with_agent(request: ChatRequest):
             "content": answer_text
         })
 
+        recorder.end_run(success=True)
+
         return ChatResponse(
             message=answer_text,
             role="assistant",
             visual=visuals[0] if visuals else None,
             visuals=visuals,
+            events=recorder.events,
         )
 
     except Exception as e:

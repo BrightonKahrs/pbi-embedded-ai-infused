@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
+from ai.event_recorder import AgentEvent
 from models.visual_models import VisualConfig
 
 
@@ -33,6 +34,8 @@ class ChatResponse(BaseModel):
     # populated, ``visual`` mirrors ``visuals[0]``.
     visual: Optional[InlineVisual] = None
     visuals: List[InlineVisual] = Field(default_factory=list)
+
+    events: List[AgentEvent] = Field(default_factory=list)
 
 class PowerBIConfig(BaseModel):
     embedUrl: str

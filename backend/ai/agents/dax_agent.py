@@ -6,6 +6,7 @@ from agent_framework import Agent
 from agent_framework._skills import SkillsProvider
 from pydantic import Field
 
+from ai.event_recorder import EventRecorder
 from ai.tools.execute_dax_query_tool import execute_dax_query_tool
 from ai.tools.inspect_data_model_tool import inspect_data_model_tool
 from ai.skills.dax_skill import build_dax_skills_source
@@ -59,7 +60,9 @@ class DaxAgent(BaseAgent):
         self._skills_provider = SkillsProvider(build_dax_skills_source())
 
     async def generate_dax_query(
-        self, user_query: str
+        self,
+        user_query: str,
+        recorder: Optional[EventRecorder] = None,
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """Generate the DAX-driven answer for a user question.
 
@@ -70,6 +73,10 @@ class DaxAgent(BaseAgent):
         when no DAX query produced rows. The caller can pair each query's
         rows with a ``VisualConfig`` to produce one or more inline
         charts.
+
+        If ``recorder`` is provided, tool calls and a final ``REASONING``
+        summary event are appended to it so callers can surface
+        explainability data on the response.
         """
         self._ensure_client()
 
@@ -109,11 +116,64 @@ class DaxAgent(BaseAgent):
                 pass
             return result
 
+        # Wrap the (already wrapped) tools with the event recorder so the
+        # explainability panel can show what the agent invoked, what
+        # arguments it passed, and how long each call took. The recorder
+        # wrappers are pure observers — they do not alter the tool's
+        # return value.
+        async def recorded_execute_dax_query_tool(
+            dax_query: Annotated[
+                str,
+                Field(description="The DAX query to execute on the power bi semantic model"),
+            ],
+        ) -> str:
+            if recorder is None:
+                return await execute_dax_query_tool_capture(dax_query)
+            tool_call_id = recorder.start_tool(
+                "execute_dax_query_tool", {"dax_query": dax_query}
+            )
+            try:
+                result = await execute_dax_query_tool_capture(dax_query)
+            except Exception as exc:  # noqa: BLE001
+                recorder.end_tool(tool_call_id, result=None, error=str(exc))
+                raise
+            row_count: Optional[int] = None
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, list):
+                    row_count = len(parsed)
+            except (json.JSONDecodeError, ValueError):
+                pass
+            recorder.end_tool(
+                tool_call_id,
+                result={"rows": row_count, "raw": result} if row_count is not None else result,
+            )
+            return result
+
+        async def recorded_inspect_data_model_tool(
+            info_function: Annotated[
+                str,
+                Field(description="The INFO function or DMV query to run against the model."),
+            ],
+        ) -> str:
+            if recorder is None:
+                return await inspect_data_model_tool(info_function)
+            tool_call_id = recorder.start_tool(
+                "inspect_data_model_tool", {"info_function": info_function}
+            )
+            try:
+                result = await inspect_data_model_tool(info_function)
+            except Exception as exc:  # noqa: BLE001
+                recorder.end_tool(tool_call_id, result=None, error=str(exc))
+                raise
+            recorder.end_tool(tool_call_id, result=result)
+            return result
+
         agent = Agent(
             client=self._client,
             name="DaxAgent",
             instructions=SYSTEM_INSTRUCTIONS,
-            tools=[execute_dax_query_tool_capture, inspect_data_model_tool],
+            tools=[recorded_execute_dax_query_tool, recorded_inspect_data_model_tool],
             context_providers=[self._skills_provider],
         )
 
@@ -122,4 +182,7 @@ class DaxAgent(BaseAgent):
             f"DAX agent answer: {result.text} "
             f"(captured {len(captured_queries)} query result(s))"
         )
+        if recorder is not None:
+            answer_text = result.text or ""
+            recorder.add_reasoning({"answer_preview": answer_text[:160]})
         return result.text, captured_queries
