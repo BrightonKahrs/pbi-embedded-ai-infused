@@ -193,6 +193,78 @@
   flex-shrink: 0;
 }
 
+/* === AG-UI streaming additions === */
+
+.agent-handoff-banner {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.12), rgba(99, 102, 241, 0.12));
+  border: 1px solid rgba(168, 85, 247, 0.35);
+  font-size: 12px;
+  color: #4c1d95;
+}
+
+.agent-handoff-banner strong {
+  font-weight: 700;
+}
+
+.agent-handoff-reason {
+  font-style: italic;
+  color: #6b21a8;
+}
+
+.agent-handoff-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.85);
+  color: #4c1d95;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+.streaming-cursor {
+  display: inline-block;
+  margin-left: 2px;
+  color: #667eea;
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to { visibility: hidden; }
+}
+
+.tool-call-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin: 2px 6px 2px 0;
+  border-radius: 999px;
+  background: rgba(180, 83, 9, 0.1);
+  border: 1px solid rgba(180, 83, 9, 0.3);
+  font-size: 12px;
+  color: #92400e;
+}
+
+.tool-call-chip .tool-call-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+}
+
+.tool-call-chip .tool-call-status {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.75;
+}
+
 .send-button:hover:not(:disabled) {
   transform: scale(1.05);
   box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
@@ -220,3 +292,6 @@
 .messages-container::-webkit-scrollbar-thumb:hover {
   background: #999;
 }
+
+/* === AG-UI streaming additions === */
+

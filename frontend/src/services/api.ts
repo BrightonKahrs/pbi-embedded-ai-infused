@@ -97,6 +97,11 @@ export const apiService = {
     return response.data;
   },
 
+  /** Absolute URL for the AG-UI SSE streaming chat endpoint (POST). */
+  getChatStreamUrl(): string {
+    return `${API_BASE_URL}/api/chat/stream`;
+  },
+
   async getChatHistory(): Promise<{ messages: ChatMessage[] }> {
     const response = await apiClient.get('/api/chat/history');
     return response.data;

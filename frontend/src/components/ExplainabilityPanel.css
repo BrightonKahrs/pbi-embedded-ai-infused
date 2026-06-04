@@ -252,9 +252,25 @@
 .cat-text { color: #15803d; }
 .cat-reasoning { color: #c2410c; }
 .cat-error { color: #b91c1c; }
+.cat-request { color: #6366f1; }
+.cat-custom { color: #a21caf; }
 
 .cat-run .explain-card { border-left: 3px solid #2563eb; }
 .cat-tool .explain-card { border-left: 3px solid #b45309; }
 .cat-text .explain-card { border-left: 3px solid #15803d; }
 .cat-reasoning .explain-card { border-left: 3px solid #c2410c; }
 .cat-error .explain-card { border-left: 3px solid #b91c1c; }
+.cat-request .explain-card { border-left: 3px solid #6366f1; }
+.cat-custom .explain-card { border-left: 3px solid #a21caf; }
+
+/* Make AgentHandoff CUSTOM events stand out — they signal the
+   router → DAX deep-analysis baton pass. */
+.explain-card-handoff {
+  background: linear-gradient(90deg, rgba(168, 85, 247, 0.08), transparent 60%);
+}
+
+.explain-badge-handoff {
+  background: linear-gradient(135deg, #a21caf, #6366f1);
+  color: #fff !important;
+  border-color: transparent !important;
+}
