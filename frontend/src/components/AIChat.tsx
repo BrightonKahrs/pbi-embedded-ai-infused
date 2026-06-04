@@ -282,6 +282,7 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null
     inlineVisuals,
     reasoningBlocks,
     timelineItems,
+    visualExplanations,
     isRunning,
     error,
     sendMessage,
@@ -382,6 +383,7 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null
         const pinKey = item.id;
         const pinned = pinnedMessages.has(pinKey);
         const pinError = pinErrors[pinKey];
+        const explanation = visualExplanations[item.visualIndex];
         return (
           <div key={item.id} className="timeline-visual-card">
             <InlinePowerBIVisual
@@ -399,6 +401,25 @@ const AIChat: React.FC<AIChatProps> = ({ onAddInlineVisual, currentReport = null
                 style={{ marginTop: 6, fontSize: 12, color: '#b91c1c' }}
               >
                 Couldn't add: {pinError}
+              </div>
+            )}
+            {explanation && (
+              <div className="visual-explanation">
+                {explanation.content && (
+                  <MessageMarkdown
+                    content={explanation.content}
+                    className="visual-explanation-md"
+                  />
+                )}
+                {!explanation.complete && (
+                  <span
+                    className="visual-explanation-thinking"
+                    aria-live="polite"
+                  >
+                    <span className="activity-spinner" aria-hidden="true" />
+                    <span>Explaining…</span>
+                  </span>
+                )}
               </div>
             )}
           </div>

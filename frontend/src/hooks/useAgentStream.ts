@@ -42,6 +42,8 @@ import type {
   InlineVisualsPayload,
   ReasoningCustomPayload,
   TimestampedEvent,
+  VisualExplanationDeltaPayload,
+  VisualExplanationEndPayload,
 } from "../types/ag-ui";
 import { AGUIEventType, REQUEST_SENT_TYPE } from "../types/ag-ui";
 import { streamAgentResponse } from "../services/sseChatClient";
@@ -103,6 +105,14 @@ export interface RoutingEvent extends AgentHandoffPayload {
   id: string;
 }
 
+/** Per-visual streaming explanation produced by the deep-analysis agent.
+ * Keyed by the `visual_index` from the SSE payload (same index as the
+ * cumulative `inlineVisuals` array). */
+export interface VisualExplanation {
+  content: string;
+  complete: boolean;
+}
+
 // --- Timeline ---------------------------------------------------------------
 //
 // A SINGLE insertion-ordered list of "things to render" so the bubble
@@ -128,6 +138,8 @@ interface UseAgentStreamReturn {
   inlineVisuals: InlineVisualWire[];
   reasoningBlocks: ReasoningBlock[];
   timelineItems: TimelineItem[];
+  /** Per-visual-index streaming explanations from the deep-analysis agent. */
+  visualExplanations: Record<number, VisualExplanation>;
   isRunning: boolean;
   error: string | null;
   sendMessage: (content: string) => void;
@@ -241,6 +253,9 @@ export function useAgentStream(
   const [timelineItems, setTimelineItems] = useState<TimelineItem[]>(() =>
     seedTimeline(initialMessages)
   );
+  const [visualExplanations, setVisualExplanations] = useState<
+    Record<number, VisualExplanation>
+  >({});
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -374,6 +389,48 @@ export function useAgentStream(
                 : t
             )
           );
+          return;
+        }
+        case "VisualExplanationDelta":
+        case "visual_explanation_delta": {
+          if (!value) return;
+          const payload = value as VisualExplanationDeltaPayload;
+          if (
+            typeof payload.visual_index !== "number" ||
+            typeof payload.delta !== "string" ||
+            !payload.delta
+          ) {
+            return;
+          }
+          const idx = payload.visual_index;
+          setVisualExplanations((prev) => {
+            const existing = prev[idx];
+            return {
+              ...prev,
+              [idx]: {
+                content: (existing?.content ?? "") + payload.delta,
+                complete: false,
+              },
+            };
+          });
+          return;
+        }
+        case "VisualExplanationEnd":
+        case "visual_explanation_end": {
+          if (!value) return;
+          const payload = value as VisualExplanationEndPayload;
+          if (typeof payload.visual_index !== "number") return;
+          const idx = payload.visual_index;
+          setVisualExplanations((prev) => {
+            const existing = prev[idx];
+            return {
+              ...prev,
+              [idx]: {
+                content: existing?.content ?? "",
+                complete: true,
+              },
+            };
+          });
           return;
         }
         case "Reasoning":
@@ -666,6 +723,7 @@ export function useAgentStream(
     setInlineVisuals([]);
     setReasoningBlocks([]);
     setTimelineItems(seedTimeline(seeded));
+    setVisualExplanations({});
     setError(null);
     conversationRef.current = [];
     lastAssistantIdRef.current = null;
@@ -684,6 +742,7 @@ export function useAgentStream(
     inlineVisuals,
     reasoningBlocks,
     timelineItems,
+    visualExplanations,
     isRunning,
     error,
     sendMessage,

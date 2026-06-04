@@ -238,3 +238,19 @@ export interface ReasoningCustomPayload {
   delta?: string;
   source?: string;
 }
+
+/** Streaming explanation delta for an inline visual produced by the
+ * deep-analysis agent. The `visual_index` matches the index of the visual
+ * in the cumulative `inlineVisuals` array on the frontend (i.e. arrival
+ * order of `InlineVisuals` payloads). */
+export interface VisualExplanationDeltaPayload {
+  visual_index: number;
+  delta: string;
+  agent: string;
+}
+
+/** Terminator event for a per-visual explanation stream. */
+export interface VisualExplanationEndPayload {
+  visual_index: number;
+  agent: string;
+}
