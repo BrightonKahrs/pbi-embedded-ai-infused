@@ -251,6 +251,25 @@
   color: var(--text-primary);
 }
 
+/* Brief highlight applied to a chat-pinned widget tile so the user can
+   immediately spot the newly-added visual on the Power BI Widgets tab. */
+.visual-container.flash-new {
+  animation: flash-new-tile 1.6s ease-out 1;
+  border-color: var(--accent-color);
+}
+
+@keyframes flash-new-tile {
+  0% {
+    box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.0);
+  }
+  20% {
+    box-shadow: 0 0 0 6px rgba(102, 126, 234, 0.45);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.0);
+  }
+}
+
 .visual-placeholder {
   border: 2px dashed var(--border-color);
   border-radius: 8px;
