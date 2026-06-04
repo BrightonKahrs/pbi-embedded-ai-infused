@@ -30,6 +30,8 @@ dependencies = [
     # Auth / caching (from toml)
     "python-jose[cryptography]>=3.3.0",
     "cachetools>=5.3.0",
+    "agent-framework-ag-ui>=1.0.0b260225",
+    "ag-ui-protocol>=0.1.13",
 ]
 
 [build-system]

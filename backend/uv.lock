@@ -2520,7 +2520,9 @@ name = "pbi-embedded-ai-infused"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "ag-ui-protocol" },
     { name = "agent-framework" },
+    { name = "agent-framework-ag-ui" },
     { name = "agent-framework-azure-ai" },
     { name = "agent-framework-devui" },
     { name = "agent-framework-foundry" },
@@ -2543,7 +2545,9 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ag-ui-protocol", specifier = ">=0.1.13" },
     { name = "agent-framework", specifier = ">=1.7.0" },
+    { name = "agent-framework-ag-ui", specifier = ">=1.0.0b260225" },
     { name = "agent-framework-azure-ai", specifier = ">=1.0.0rc6" },
     { name = "agent-framework-devui" },
     { name = "agent-framework-foundry", specifier = ">=1.7.0" },

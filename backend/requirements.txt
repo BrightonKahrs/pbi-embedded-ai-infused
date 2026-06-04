@@ -7,6 +7,9 @@ pydantic-settings==2.6.1
 agent-framework>=1.7.0
 agent-framework-azure-ai>=1.0.0rc6
 agent-framework-foundry>=1.7.0
+# AG-UI streaming protocol (Feature 4) — exposes /api/chat/stream as SSE.
+agent-framework-ag-ui>=1.0.0b260225
+ag-ui-protocol>=0.1.13
 azure-identity>=1.19.0
 azure-ai-projects>=2.2.0
 openai>=2.24.0
