@@ -1,0 +1,176 @@
+.inline-chart {
+  margin-top: 12px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* Span past the chat bubble's max-width so the visual has breathing room. */
+  width: 100%;
+  min-width: 280px;
+  max-width: 100%;
+}
+
+.inline-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(118, 75, 162, 0.08) 100%);
+}
+
+.inline-chart-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.inline-chart-add-button {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: white;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+.inline-chart-add-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(102, 126, 234, 0.35);
+}
+
+.inline-chart-add-button:active {
+  transform: translateY(0);
+}
+
+.inline-chart-add-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.inline-chart-body {
+  width: 100%;
+  height: 220px;
+  padding: 8px 4px 4px;
+  background: white;
+}
+
+.inline-chart-footer {
+  padding: 6px 12px 10px;
+  border-top: 1px solid #f1f5f9;
+  background: #f8fafc;
+}
+
+.inline-chart-meta {
+  font-size: 11px;
+  color: #64748b;
+  letter-spacing: 0.1px;
+}
+
+/* When the inline chart sits inside a chat bubble, override the
+   bubble's narrow max-width so the chart has room to breathe. */
+.message-content.has-inline-chart {
+  max-width: 100%;
+  width: 100%;
+}
+
+.message-content.has-inline-chart .message-text {
+  background: transparent;
+  box-shadow: none;
+  padding: 0 0 6px 0;
+}
+
+/* Subtle entry animation matching the chat fadeIn. */
+.inline-chart {
+  animation: inline-chart-fade 0.3s ease-out;
+}
+
+@keyframes inline-chart-fade {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Recharts overrides for tighter typography. */
+.inline-chart .recharts-cartesian-axis-tick-value {
+  font-family: inherit;
+}
+
+/* Power BI embedded visual inside an inline chat chart. */
+.inline-pbi-embed-frame,
+.inline-pbi-embed-frame iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: block;
+}
+
+.inline-chart-pbi-fallback {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Compact loading pill shown while we wait for the inline Power BI embed
+   to materialise. Stays inline so the chat doesn't reserve a tall blank
+   card before the visual is ready. */
+.inline-pbi-loading-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  padding: 8px 14px;
+  margin-top: 6px;
+  height: 32px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.10), rgba(118, 75, 162, 0.10));
+  border: 1px solid rgba(102, 126, 234, 0.25);
+  color: #4338ca;
+  font-size: 12px;
+  font-weight: 500;
+  max-width: 100%;
+  animation: inline-chart-fade 0.2s ease-out;
+}
+
+.inline-pbi-loading-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.inline-pbi-loading-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(99, 102, 241, 0.25);
+  border-top-color: #6366f1;
+  animation: inline-pbi-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes inline-pbi-spin {
+  to { transform: rotate(360deg); }
+}

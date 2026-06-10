@@ -99,6 +99,20 @@
   max-width: 1800px;
   width: 100%;
   margin: 0 auto;
+  transition: grid-template-columns 280ms ease;
+}
+
+.App-content.chat-mode-docked {
+  grid-template-columns: 1fr 400px;
+}
+
+.App-content.chat-mode-minimized,
+.App-content.chat-mode-fullscreen {
+  grid-template-columns: 1fr;
+}
+
+.App-content.chat-mode-fullscreen .report-section {
+  display: none;
 }
 
 /* Tab controls styling */
@@ -158,10 +172,25 @@
   flex-direction: column;
 }
 
+/* When ChatShell is in minimized or fullscreen mode it positions itself
+   (display:none for the panel, position:fixed for fullscreen + launcher),
+   so the grid cell that previously held the docked chat should not
+   reserve any space. */
+.chat-section-detached {
+  display: contents;
+}
+
 @media (max-width: 1024px) {
-  .App-content {
+  .App-content,
+  .App-content.chat-mode-docked {
     grid-template-columns: 1fr;
     grid-template-rows: 1fr 400px;
+  }
+
+  .App-content.chat-mode-minimized,
+  .App-content.chat-mode-fullscreen {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
   }
 }
 
@@ -228,6 +257,25 @@
   flex-direction: column;
   width: 100%;
   color: var(--text-primary);
+}
+
+/* Brief highlight applied to a chat-pinned widget tile so the user can
+   immediately spot the newly-added visual on the Power BI Widgets tab. */
+.visual-container.flash-new {
+  animation: flash-new-tile 1.6s ease-out 1;
+  border-color: var(--accent-color);
+}
+
+@keyframes flash-new-tile {
+  0% {
+    box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.0);
+  }
+  20% {
+    box-shadow: 0 0 0 6px rgba(102, 126, 234, 0.45);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.0);
+  }
 }
 
 .visual-placeholder {

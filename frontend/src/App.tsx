@@ -5,8 +5,12 @@ import './App.css';
 import PowerBIReport from './components/PowerBIReport';
 import VisualSelector from './components/VisualSelector';
 import AIChat from './components/AIChat';
+import ChatShell, { ChatMode } from './components/ChatShell';
 import VisualCreatorModal from './components/VisualCreatorModal';
-import { apiService } from './services/api';
+import { apiService, InlineVisual } from './services/api';
+import { pinInlineVisualToReport } from './services/inlineVisualPinner';
+import { AgentStreamProvider } from './contexts/AgentStreamContext';
+import { GREETING } from './components/AIChat';
 
 /**
  * Cross-Filtering Feature Implementation:
@@ -24,7 +28,16 @@ import { apiService } from './services/api';
 
 function App() {
   const [embedType, setEmbedType] = useState<'report' | 'visual'>('report');
-  const [visualIds, setVisualIds] = useState<string[]>([]);
+  // Each widget tile tracks BOTH its visualId AND the page that visual lives on,
+  // because chat-pinned widgets each create their own page. A single shared
+  // `pageName` state broke the second-pin case (the second pin overwrote the
+  // global page, so the first tile's visual-embed iframe could no longer find
+  // its visual). Keeping it per-widget lets each tile embed correctly.
+  type WidgetRef = { visualId: string; pageName: string };
+  const [widgets, setWidgets] = useState<WidgetRef[]>([]);
+  // Modal-driven "select from page" flow still picks ONE page first and then
+  // adds visuals from it, so we keep a top-level `pageName` for that legacy
+  // flow. Chat-pin uses its own per-visual page (carried on each WidgetRef).
   const [pageName, setPageName] = useState<string>('');  
   const [discoveredPages, setDiscoveredPages] = useState<any[]>([]);
   const [availableVisuals, setAvailableVisuals] = useState<any[]>([]);
@@ -41,6 +54,40 @@ function App() {
   // Store reference to the current report and page for visual creation
   const [currentReport, setCurrentReport] = useState<Report | null>(null);
   const [currentPage, setCurrentPage] = useState<Page | null>(null);
+
+  // Chat shell display mode (docked / minimized / fullscreen)
+  const [chatMode, setChatMode] = useState<ChatMode>('docked');
+
+  // Tracks the visualId of the most recently pinned chat-suggested widget so
+  // we can scroll its tile into view and briefly flash it after the user
+  // clicks "+ Add to widgets" in the chat.
+  const [recentlyPinnedVisualId, setRecentlyPinnedVisualId] =
+    useState<string | null>(null);
+  const visualTileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // After a pin, scroll the new widget into view and remove the flash class
+  // once the highlight animation finishes.
+  useEffect(() => {
+    if (!recentlyPinnedVisualId) return;
+    // Wait one tick so the new tile is mounted before we scroll/highlight.
+    const t = window.setTimeout(() => {
+      const node = visualTileRefs.current.get(recentlyPinnedVisualId);
+      if (node) {
+        try {
+          node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch {
+          /* older browsers: ignore */
+        }
+      }
+    }, 50);
+    const clear = window.setTimeout(() => {
+      setRecentlyPinnedVisualId(null);
+    }, 2000);
+    return () => {
+      window.clearTimeout(t);
+      window.clearTimeout(clear);
+    };
+  }, [recentlyPinnedVisualId]);
 
   // Load available pages and visuals on component mount
   useEffect(() => {
@@ -65,14 +112,12 @@ function App() {
   }, [theme]);
 
   const handleVisualSelect = (selectedVisualId: string) => {
-    setVisualIds(prev => {
-      if (prev.includes(selectedVisualId)) {
-        // Remove if already selected
-        return prev.filter(id => id !== selectedVisualId);
-      } else {
-        // Add to selection
-        return [...prev, selectedVisualId];
+    setWidgets(prev => {
+      const existing = prev.findIndex(w => w.visualId === selectedVisualId);
+      if (existing >= 0) {
+        return prev.filter((_, i) => i !== existing);
       }
+      return [...prev, { visualId: selectedVisualId, pageName }];
     });
     if (selectedVisualId && pageName) {
       setEmbedType('visual');
@@ -84,14 +129,14 @@ function App() {
   };
 
   const clearAllVisuals = () => {
-    setVisualIds([]);
+    setWidgets([]);
     setPageName('');
     visualRefsMap.current.clear();
   };
 
   // Handle cross-filtering between visuals
   const handleVisualDataSelected = useCallback(async (sourceVisualId: string, event: any) => {
-    if (!crossFilterEnabled || visualIds.length <= 1) return;
+    if (!crossFilterEnabled || widgets.length <= 1) return;
 
     try {
       const dataPoints = event.detail?.dataPoints;
@@ -135,7 +180,7 @@ function App() {
     } catch (error) {
       console.error('Error in cross-filtering:', error);
     }
-  }, [crossFilterEnabled, visualIds]);
+  }, [crossFilterEnabled, widgets]);
 
   // Clear filters on all visuals except the source
   const clearFiltersOnOtherVisuals = async (sourceVisualId: string) => {
@@ -165,7 +210,7 @@ function App() {
   // Handle visual creation from modal
   const handleCreateVisual = (visualId: string, newPageName: string) => {
     setPageName(newPageName);
-    setVisualIds(prev => [...prev, visualId]);
+    setWidgets(prev => [...prev, { visualId, pageName: newPageName }]);
     setEmbedType('visual');
   };
 
@@ -208,6 +253,17 @@ function App() {
     try {
       const pages = await report.getPages();
       console.log('Discovering visuals from', pages.length, 'pages...');
+
+      // Default to the "Overview" page if it exists and isn't already active
+      const overviewPage = pages.find(p => p.displayName === 'Overview');
+      if (overviewPage && !overviewPage.isActive) {
+        try {
+          await overviewPage.setActive();
+          console.log('Set active page to "Overview"');
+        } catch (activateErr) {
+          console.warn('Could not set Overview as active page:', activateErr);
+        }
+      }
       
       const visualsMap = new Map<string, any[]>();
       const pagesInfo: any[] = [];
@@ -267,7 +323,41 @@ function App() {
     }
   };
 
+  // Pin a chat-generated inline visual to the embedded report as a new widget.
+  // Requires that the Full report has been loaded at least once, since that is
+  // when `currentReport` is populated (and only an embedded authoring-capable
+  // report can host new visuals).
+  const handleAddInlineVisualToWidgets = useCallback(
+    async (inline: InlineVisual) => {
+      if (!currentReport) {
+        const msg =
+          'Open the Full report tab once so the report can be authored, then try again.';
+        alert(msg);
+        throw new Error(msg);
+      }
+      const { visualId, pageName: newPageName } = await pinInlineVisualToReport(
+        currentReport,
+        inline.config
+      );
+      // Each chat-pinned widget lives on its OWN auto-generated page. Track
+      // the (visualId, pageName) pair so the tile's visual-embed iframe can
+      // find its visual even after subsequent pins on different pages.
+      setWidgets(prev =>
+        prev.some(w => w.visualId === visualId)
+          ? prev
+          : [...prev, { visualId, pageName: newPageName }]
+      );
+      // Always jump to the Widgets tab so the user sees the freshly-pinned
+      // chart even if they were on the Full report.
+      setEmbedType('visual');
+      // Flag the new tile so the UI can scroll to it and briefly highlight it.
+      setRecentlyPinnedVisualId(visualId);
+    },
+    [currentReport]
+  );
+
   return (
+    <AgentStreamProvider initialAssistantGreeting={GREETING}>
     <div className="App">
       <header className="App-header">
         <div className="header-top">
@@ -315,7 +405,7 @@ function App() {
         </div>
 
         {/* Visual selection controls - shown when Power BI Widgets tab is active */}
-        {embedType === 'visual' && visualIds.length > 1 && (
+        {embedType === 'visual' && widgets.length > 1 && (
           <div className="visual-controls" style={{ 
             marginTop: '15px', 
             display: 'flex', 
@@ -352,19 +442,71 @@ function App() {
 
 
       </header>
-      <div className="App-content">
-        <div className="report-section">
-          {embedType === 'visual' ? (
-            /* Render visual grid with placeholder */
+      <div className={`App-content chat-mode-${chatMode}`}>
+        <div className="report-section" aria-hidden={chatMode === 'fullscreen'}>
+          {/*
+            The edit-mode authoring report MUST stay mounted at all times so
+            that `currentReport` remains a live, authoring-capable handle for:
+              (a) chat-side `createInlineVisualOnly` calls, and
+              (b) `pinInlineVisualToReport` (Add to widgets) — which
+                  otherwise fails on the second pin with
+                  "the report must be embedded in Edit mode to author visuals"
+                  because the iframe gets torn down when we switch to the
+                  Widgets tab.
+            When the Widgets tab is active the report iframe is rendered
+            offscreen but kept mounted, and the visuals grid renders ON TOP.
+          */}
+          <div
+            className="report-authoring-host"
+            style={
+              embedType === 'visual'
+                ? {
+                    position: 'absolute',
+                    width: 1,
+                    height: 1,
+                    overflow: 'hidden',
+                    opacity: 0,
+                    pointerEvents: 'none',
+                    left: -9999,
+                    top: -9999,
+                  }
+                : { width: '100%', height: '100%' }
+            }
+            aria-hidden={embedType === 'visual'}
+          >
+            <PowerBIReport
+              embedType="report"
+              editMode={true}
+              hideEditBar={true}
+              onReportLoaded={handleReportLoaded}
+            />
+          </div>
+
+          {embedType === 'visual' && (
+            /* Visuals grid on top of the hidden authoring report. Each widget
+               carries its OWN pageName because chat-pinned visuals each live
+               on a freshly-created page. */
             <div className="multi-visual-container">
               <div className="multi-visual-grid">
-                {visualIds.map((visualId, index) => (
-                  <div key={visualId} className="visual-container">
-                    <PowerBIReport 
+                {widgets.map(({ visualId, pageName: widgetPageName }) => (
+                  <div
+                    key={visualId}
+                    ref={node => {
+                      if (node) {
+                        visualTileRefs.current.set(visualId, node);
+                      } else {
+                        visualTileRefs.current.delete(visualId);
+                      }
+                    }}
+                    className={`visual-container${
+                      recentlyPinnedVisualId === visualId ? ' flash-new' : ''
+                    }`}
+                  >
+                    <PowerBIReport
                       embedType="visual"
                       visualId={visualId}
-                      pageName={pageName}
-                      onDataSelected={crossFilterEnabled && visualIds.length > 1 ? handleVisualDataSelected : undefined}
+                      pageName={widgetPageName}
+                      onDataSelected={crossFilterEnabled && widgets.length > 1 ? handleVisualDataSelected : undefined}
                       onVisualRef={registerVisualRef}
                     />
                   </div>
@@ -379,17 +521,25 @@ function App() {
                 </div>
               </div>
             </div>
-          ) : (
-            /* Render full report - edit mode enabled for visual authoring */
-            <PowerBIReport 
-              embedType={embedType}
-              editMode={true}
-              onReportLoaded={handleReportLoaded}
-            />
           )}
         </div>
-        <div className="chat-section">
-          <AIChat />
+        {/* ChatShell is rendered exactly ONCE regardless of mode so that
+            the inner AIChat subtree (whose chat session lives in
+            AgentStreamProvider above) stays mounted across docked /
+            minimized / fullscreen transitions. The previous split
+            mounting in two branches caused the entire chat to unmount
+            and lose its conversation on every mode change.
+            In docked mode we wrap it in a flex column so it occupies
+            the dashboard's chat column; in fullscreen/minimized the
+            shell positions itself via CSS. */}
+        <div
+          className={
+            chatMode === 'docked' ? 'chat-section' : 'chat-section chat-section-detached'
+          }
+        >
+          <ChatShell mode={chatMode} onModeChange={setChatMode}>
+            <AIChat onAddInlineVisual={handleAddInlineVisualToWidgets} currentReport={currentReport} />
+          </ChatShell>
         </div>
       </div>
 
@@ -406,6 +556,7 @@ function App() {
         onVisualCreated={handleVisualCreated}
       />
     </div>
+    </AgentStreamProvider>
   );
 }
 

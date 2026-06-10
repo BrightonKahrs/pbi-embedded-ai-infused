@@ -1,0 +1,122 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Backend: Run FastAPI",
+            "type": "shell",
+            "command": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+            "args": [
+                "-m",
+                "uvicorn",
+                "main:app",
+                "--reload",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/backend"
+            },
+            "isBackground": true,
+            "problemMatcher": [
+                {
+                    "pattern": [
+                        {
+                            "regexp": ".",
+                            "file": 1,
+                            "location": 2,
+                            "message": 3
+                        }
+                    ],
+                    "background": {
+                        "activeOnStart": true,
+                        "beginsPattern": ".*Started server process.*|.*Will watch for changes.*|.*Uvicorn running.*",
+                        "endsPattern": ".*Application startup complete.*|.*Uvicorn running on.*"
+                    }
+                }
+            ],
+            "presentation": {
+                "panel": "dedicated",
+                "group": "run",
+                "reveal": "always"
+            }
+        },
+        {
+            "label": "Frontend: Run React Dev Server",
+            "type": "shell",
+            "command": "npm",
+            "args": [
+                "start"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/frontend",
+                "env": {
+                    "BROWSER": "none"
+                }
+            },
+            "isBackground": true,
+            "problemMatcher": [
+                {
+                    "pattern": [
+                        {
+                            "regexp": ".",
+                            "file": 1,
+                            "location": 2,
+                            "message": 3
+                        }
+                    ],
+                    "background": {
+                        "activeOnStart": true,
+                        "beginsPattern": ".*Compiling.*|.*Starting the development server.*",
+                        "endsPattern": ".*Compiled successfully.*|.*webpack compiled.*|.*To create a production build.*"
+                    }
+                }
+            ],
+            "presentation": {
+                "panel": "dedicated",
+                "group": "run",
+                "reveal": "always"
+            }
+        },
+        {
+            "label": "Frontend: Install Dependencies",
+            "type": "shell",
+            "command": "npm",
+            "args": [
+                "install"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/frontend"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Backend: Install Dependencies",
+            "type": "shell",
+            "command": "${workspaceFolder}/backend/.venv/Scripts/pip.exe",
+            "args": [
+                "install",
+                "-r",
+                "requirements.txt"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/backend"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run All (Backend + Frontend)",
+            "dependsOn": [
+                "Backend: Run FastAPI",
+                "Frontend: Run React Dev Server"
+            ],
+            "dependsOrder": "parallel",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}

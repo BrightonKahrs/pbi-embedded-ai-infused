@@ -12,15 +12,58 @@ export interface ChatRequest {
   context?: string;
 }
 
+export interface InlineVisual {
+  config: VisualConfig;
+  /** Raw rows captured from the DAX query, keyed by `Table[Column]` or `[Measure]`. */
+  data: Array<Record<string, any>>;
+}
+
+export interface AgentEvent {
+  id: string;
+  type: string;
+  timestamp: number;
+  name?: string | null;
+  details: Record<string, any>;
+  duration_ms?: number | null;
+}
+
 export interface ChatResponse {
   message: string;
   role: string;
+  /** Single visual, kept for backwards compatibility — mirrors visuals[0]. */
+  visual?: InlineVisual | null;
+  /** Zero or more inline visuals, one per DAX query the AI ran. */
+  visuals?: InlineVisual[];
+  /** Per-turn agent activity events for the explainability panel. */
+  events?: AgentEvent[];
+}
+
+export interface VisualConfig {
+  visualType: string;
+  title?: string;
+  dataFields: Array<{
+    dataRole: string;
+    table: string;
+    column: string;
+    isMeasure?: boolean;
+  }>;
+  properties?: {
+    showLegend?: boolean;
+    showXAxis?: boolean;
+    showYAxis?: boolean;
+  };
+}
+
+export interface VisualChatResponse {
+  config: VisualConfig;
+  message: string;
 }
 
 export interface PowerBIConfig {
   embedUrl: string;
   accessToken: string;
   embedType: string;
+  tokenType?: string; // 'Embed' or 'Aad'
   visualName?: string;
   pageName?: string;
 }
@@ -54,6 +97,11 @@ export const apiService = {
     return response.data;
   },
 
+  /** Absolute URL for the AG-UI SSE streaming chat endpoint (POST). */
+  getChatStreamUrl(): string {
+    return `${API_BASE_URL}/api/chat/stream`;
+  },
+
   async getChatHistory(): Promise<{ messages: ChatMessage[] }> {
     const response = await apiClient.get('/api/chat/history');
     return response.data;
@@ -61,6 +109,21 @@ export const apiService = {
 
   async clearChatHistory(): Promise<void> {
     await apiClient.delete('/api/chat/history');
+  },
+
+  // Visual Creator AI endpoints
+  async sendVisualChatMessage(
+    message: string,
+    conversationHistory: ChatMessage[] = []
+  ): Promise<VisualChatResponse> {
+    const response = await apiClient.post<VisualChatResponse>('/api/visual-chat', {
+      message,
+      conversationHistory: conversationHistory.map(m => ({
+        role: m.role,
+        content: m.content
+      }))
+    });
+    return response.data;
   },
 
   // Power BI endpoints

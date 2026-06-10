@@ -1,0 +1,211 @@
+.chat-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 6px 24px var(--shadow);
+  overflow: hidden;
+  transition: width 280ms ease, height 280ms ease, opacity 280ms ease,
+    box-shadow 280ms ease, border-radius 280ms ease;
+}
+
+.chat-shell-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-header);
+  color: var(--text-on-primary);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.chat-shell-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.chat-shell-sparkle {
+  font-size: 16px;
+  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.5));
+}
+
+.chat-shell-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-shell-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-on-primary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 180ms ease, transform 180ms ease;
+}
+
+.chat-shell-action:hover {
+  background: rgba(255, 255, 255, 0.28);
+  transform: translateY(-1px);
+}
+
+.chat-shell-action:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 1px;
+}
+
+.chat-shell-action-close:hover {
+  background: rgba(239, 68, 68, 0.85);
+}
+
+.chat-shell-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-surface);
+}
+
+/* Make AIChat fill the shell body and drop its own outer chrome
+   since the shell already provides a frame. */
+.chat-shell-body > * {
+  flex: 1;
+  min-height: 0;
+  border-radius: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Minimized mode keeps the panel mounted (so the inner chat subtree's
+   state survives) but hides it visually. The floating launcher is the
+   only visible chat affordance in this state. */
+.chat-shell-hidden {
+  display: none !important;
+}
+
+/* Fullscreen mode -------------------------------------------------------- */
+/* True full-viewport overlay: covers everything (including the purple
+   App header), edge-to-edge with no border-radius and no margin so the
+   chat is the only thing visible. The header/composer stay pinned and
+   only the messages body scrolls because the existing .chat-shell
+   layout uses flex with min-height: 0. */
+.chat-shell-fullscreen {
+  position: fixed;
+  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
+  max-height: 100vh;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  z-index: 9999;
+  box-sizing: border-box;
+}
+
+/* Make sure the header stretches across the full width and the close
+   button isn't clipped off the right edge in fullscreen. */
+.chat-shell-fullscreen .chat-shell-header {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.chat-shell-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 9998;
+  animation: chat-shell-fade-in 200ms ease;
+}
+
+@keyframes chat-shell-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Floating launcher (minimized) ----------------------------------------- */
+.chat-shell-launcher {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 1000;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+  border: none;
+  border-radius: 999px;
+  color: #ffffff;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  box-shadow: 0 10px 28px rgba(102, 126, 234, 0.45),
+    0 2px 6px rgba(0, 0, 0, 0.12);
+  transition: transform 200ms ease, box-shadow 200ms ease, filter 200ms ease;
+}
+
+.chat-shell-launcher:hover {
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: 0 14px 32px rgba(102, 126, 234, 0.55),
+    0 4px 10px rgba(0, 0, 0, 0.15);
+  filter: brightness(1.05);
+  animation: chat-shell-pulse 1.6s ease-in-out infinite;
+}
+
+.chat-shell-launcher:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 3px;
+}
+
+.chat-shell-launcher-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.chat-shell-launcher-label {
+  white-space: nowrap;
+}
+
+@keyframes chat-shell-pulse {
+  0%, 100% {
+    box-shadow: 0 14px 32px rgba(102, 126, 234, 0.55),
+      0 4px 10px rgba(0, 0, 0, 0.15);
+  }
+  50% {
+    box-shadow: 0 14px 36px rgba(118, 75, 162, 0.7),
+      0 4px 12px rgba(0, 0, 0, 0.18);
+  }
+}
+
+@media (max-width: 768px) {
+  .chat-shell-launcher {
+    right: 16px;
+    bottom: 16px;
+    padding: 10px 16px;
+    font-size: 13px;
+  }
+}

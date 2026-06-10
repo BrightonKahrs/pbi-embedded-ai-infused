@@ -1,27 +1,95 @@
 """
 FastAPI Backend for Power BI Embedded with AI Agent Chat
 """
+import asyncio
+import os
+import logging 
+from typing import Any, Dict, Optional
+
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
-import os
-import logging
-from dotenv import load_dotenv
-from agent_service import agent_service
-from generate_pbi_token import PowerBITokenGenerator
+from fastapi.responses import StreamingResponse
 
-# Load environment variables
-load_dotenv()
+from ag_ui.core import CustomEvent, RunErrorEvent
+from ag_ui.encoder import EventEncoder
+from agent_framework_ag_ui._agent import AgentConfig
+from agent_framework_ag_ui._agent_run import run_agent_stream
+
+from pbi.generate_pbi_token import PowerBITokenGenerator
+from ai.agents.dax_agent import DaxAgent
+from ai.agents.router_agent import RouterAgent
+from ai.agents.visual_creator_agent import VisualCreatorAgent
+from ai.agents.visual_explainer import VisualExplainer
+from ai.event_recorder import EventRecorder
+from models.response_models import (
+    ChatRequest,
+    ChatResponse,
+    InlineVisual,
+    PowerBIConfig,
+    VisualChatRequest,
+    VisualConfigResponse
+)
+
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+logging.getLogger("azure").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
+
+
+# Shared agent instances
+dax_agent = DaxAgent()
+visual_creator_agent = VisualCreatorAgent()
+# Fast helper that streams short prose explanations for each visual the
+# deep agent produces. Shared so the underlying Foundry client/credential
+# is reused across requests.
+visual_explainer = VisualExplainer()
+# Fast triage/router agent — owns the routing tool that delegates to dax_agent.
+router_agent = RouterAgent(
+    dax_agent=dax_agent,
+    visual_creator_agent=visual_creator_agent,
+    visual_explainer=visual_explainer,
+)
+
+
+# In-memory conversation history (in production, use a database)
+conversation_history = []
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan - startup and shutdown."""
+    # Startup
+    await dax_agent.start()
+    await visual_creator_agent.start()
+    await visual_explainer.start()
+    await router_agent.start()
+    await initialize_pbi_token()
+    # Expose agents on app.state for endpoints that prefer DI over module globals.
+    app.state.dax_agent = dax_agent
+    app.state.visual_creator_agent = visual_creator_agent
+    app.state.visual_explainer = visual_explainer
+    app.state.router_agent = router_agent
+    yield
+    # Shutdown
+    await dax_agent.stop()
+    await visual_creator_agent.stop()
+    await visual_explainer.stop()
+    await router_agent.stop()
 
 app = FastAPI(
     title="Power BI Embedded AI Backend",
     description="Backend API for Power BI Embedded with AI Agent Chat capabilities",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Configure CORS
@@ -33,29 +101,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Request/Response models
-class ChatMessage(BaseModel):
-    role: str  # 'user' or 'assistant'
-    content: str
-
-class ChatRequest(BaseModel):
-    messages: List[ChatMessage]
-    context: Optional[str] = None
-
-class ChatResponse(BaseModel):
-    message: str
-    role: str = "assistant"
-
-class PowerBIConfig(BaseModel):
-    embedUrl: str
-    accessToken: str
-    embedType: str = "report"  # "report" or "visual"
-    visualId: Optional[str] = None
-    reportId: Optional[str] = None
-    workspaceId: Optional[str] = None
-
-# In-memory conversation history (in production, use a database)
-conversation_history = []
 
 # Global Power BI token info
 powerbi_token_info = {
@@ -65,10 +110,11 @@ powerbi_token_info = {
     "workspaceId": "",
     "tokenExpiry": "",
     "reportName": "",
+    "tokenType": "Embed",  # "Embed" or "Aad"
     "visuals": []  # List of available visuals
 }
 
-async def generate_powerbi_token():
+async def initialize_pbi_token():
     """Generate Power BI embed token at startup"""
     global powerbi_token_info
     
@@ -103,12 +149,6 @@ async def generate_powerbi_token():
         logger.warning("Power BI functionality will use environment variables if available")
         logger.info("Make sure you're logged in with 'az login' and have access to the Power BI report")
 
-# FastAPI startup event to generate Power BI token
-@app.on_event("startup")
-async def startup_event():
-    """Generate Power BI token when the app starts"""
-    await generate_powerbi_token()
-
 @app.get("/")
 async def root():
     """Health check endpoint"""
@@ -118,40 +158,104 @@ async def root():
         "version": "1.0.0"
     }
 
+@app.post("/api/visual-chat", response_model=VisualConfigResponse)
+async def visual_chat(request: VisualChatRequest):
+    """
+    Chat endpoint for AI-powered visual creation
+    Uses VisualCreatorAgent to generate Power BI visual configurations from natural language
+    """
+    try:
+        if not request.message:
+            raise HTTPException(status_code=400, detail="No message provided")
+        
+        # Get visual config from AI agent
+        config = await visual_creator_agent.generate_visual_config(
+            user_message=request.message
+        )
+        
+        # Generate a friendly response message
+        message = f"I've created a {config.visualType} configuration"
+        if config.title:
+            message += f' titled "{config.title}"'
+        message += ". The visual will be created on your report."
+        
+        return VisualConfigResponse(config=config, message=message)
+    
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in visual chat: {e}")
+        raise HTTPException(status_code=500, detail=f"Error generating visual config: {str(e)}")
+    
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_with_agent(request: ChatRequest):
     """
     Chat endpoint for AI agent interaction
-    Uses Microsoft Agent Framework for intelligent responses
+    Uses Microsoft Agent Framework that returns Power BI visual configurations
     """
     try:
         # Add user message to history
         user_message = request.messages[-1] if request.messages else None
         if not user_message:
             raise HTTPException(status_code=400, detail="No message provided")
-        
+
         # Store conversation
         conversation_history.append({
             "role": user_message.role,
             "content": user_message.content
         })
-        
-        # Convert messages to dict format for agent service
-        messages_dict = [{"role": msg.role, "content": msg.content} for msg in request.messages]
-        
-        # Get response from AI agent
-        response_content = await agent_service.chat(
-            messages=messages_dict,
-            context=request.context
-        )
-        
+        # Record what the agent does this turn so the front-end can show
+        # the AG-UI-style explainability panel.
+        recorder = EventRecorder()
+        recorder.start_run()
+
+        try:
+            # Get response from DAX agent. The agent returns the prose
+            # answer plus a list of every DAX query it executed (one
+            # entry per captured result set) so we can render one inline
+            # chart per query.
+            answer_text, captured_queries = await dax_agent.generate_dax_query(
+                user_query=user_message.content,
+                recorder=recorder,
+            )
+        except Exception:
+            recorder.end_run(success=False, error="DAX agent failed")
+            raise
+
+        visuals: list[InlineVisual] = []
+        if captured_queries:
+            try:
+                suggested_configs = await visual_creator_agent.suggest_visuals_for_queries(
+                    user_message=user_message.content,
+                    queries=captured_queries,
+                )
+                for query, suggested in zip(captured_queries, suggested_configs):
+                    if suggested is None:
+                        continue
+                    visuals.append(
+                        InlineVisual(
+                            config=suggested,
+                            data=query.get("rows", []),
+                        )
+                    )
+            except Exception as e:  # noqa: BLE001 - chart is best-effort
+                logger.warning(f"Inline visual suggestion failed: {e}")
+
         conversation_history.append({
             "role": "assistant",
-            "content": response_content
+            "content": answer_text
         })
-        
-        return ChatResponse(message=response_content, role="assistant")
-    
+
+        recorder.end_run(success=True)
+
+        return ChatResponse(
+            message=answer_text,
+            role="assistant",
+            visual=visuals[0] if visuals else None,
+            visuals=visuals,
+            events=recorder.events,
+        )
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing chat: {str(e)}")
 
@@ -165,6 +269,213 @@ async def clear_chat_history():
     """Clear conversation history"""
     conversation_history.clear()
     return {"message": "Chat history cleared"}
+
+
+def _make_custom_event(kind: str, payload: Dict[str, Any]) -> CustomEvent:
+    """Wrap a router-emitted ``(kind, payload)`` tuple into an AG-UI ``CustomEvent``.
+
+    Each ``kind`` produced by the router agent maps to a stable
+    ``CustomEvent.name`` the frontend recognises:
+
+    * ``"handoff"``                    -> ``AgentHandoff``
+    * ``"inline_visuals"``             -> ``InlineVisuals``
+    * ``"reasoning"``                  -> ``Reasoning`` (router-emitted reasoning, if any)
+    * ``"deep_reasoning"``             -> ``DeepReasoning`` (live deep-agent thinking)
+    * ``"deep_tool_start"``            -> ``DeepToolStart`` (nested tool-call begin)
+    * ``"deep_tool_end"``              -> ``DeepToolEnd`` (nested tool-call complete)
+    * ``"visual_explanation_delta"``   -> ``VisualExplanationDelta`` (per-visual prose deltas)
+    * ``"visual_explanation_end"``     -> ``VisualExplanationEnd`` (per-visual prose end marker)
+    """
+    if kind == "handoff":
+        return CustomEvent(name="AgentHandoff", value=payload)
+    if kind == "inline_visuals":
+        return CustomEvent(name="InlineVisuals", value=payload)
+    if kind == "reasoning":
+        return CustomEvent(name="Reasoning", value=payload)
+    if kind == "deep_reasoning":
+        return CustomEvent(name="DeepReasoning", value=payload)
+    if kind == "deep_tool_start":
+        return CustomEvent(name="DeepToolStart", value=payload)
+    if kind == "deep_tool_end":
+        return CustomEvent(name="DeepToolEnd", value=payload)
+    if kind == "visual_explanation_delta":
+        return CustomEvent(name="VisualExplanationDelta", value=payload)
+    if kind == "visual_explanation_end":
+        return CustomEvent(name="VisualExplanationEnd", value=payload)
+    logger.warning(f"Unknown router custom-event kind: {kind}")
+    return CustomEvent(name=kind, value=payload)
+
+
+@app.post("/api/chat/stream", tags=["AG-UI"])
+async def chat_stream(request_body: Dict[str, Any]) -> StreamingResponse:
+    """Streaming AG-UI chat endpoint.
+
+    Body shape mirrors ``AGUIRunRequest`` from the AG-UI protocol — at
+    minimum ``{"messages": [{"role": "user", "content": "..."}]}``.
+    Responds with a ``text/event-stream`` where each ``data:`` line is a
+    JSON-encoded AG-UI event (RUN_STARTED, TEXT_MESSAGE_*, TOOL_CALL_*,
+    CUSTOM, etc.). The router agent additionally emits several CUSTOM
+    event families that the front-end recognises:
+
+    * ``AgentHandoff`` — fires the moment routing to the deep DAX agent
+      begins, BEFORE the deep run completes.
+    * ``InlineVisuals`` — carries one or more ``InlineVisual`` configs
+      so the chat can render a Recharts/Power BI preview inline. Emitted
+      per captured DAX query as the deep agent works.
+    * ``DeepReasoning`` — streams the deep agent's reasoning summary as
+      the model thinks.
+    * ``DeepToolStart`` / ``DeepToolEnd`` — fire around every nested
+      tool call the deep DaxAgent makes (``execute_dax_query_tool``,
+      ``inspect_data_model_tool``), so the timeline can show what the
+      deep agent is doing as it happens.
+
+    The generator pulls from two queues: a ``framework_queue`` fed by a
+    single long-lived drain task that owns the entire lifetime of the
+    framework's async iterator, and the per-request ``custom_event_queue``
+    that the router agent pushes CUSTOM events onto. Keeping the
+    framework iterator pinned to a single task is required because
+    ``agent_framework`` stores ContextVar tokens (e.g.
+    ``INNER_RESPONSE_TELEMETRY_CAPTURED_FIELDS``) during one
+    ``__anext__`` call and resets them in a later one. If those calls
+    ran in different ``asyncio.Task`` contexts (e.g. when
+    ``asyncio.ensure_future(iterator.__anext__())`` is called in a loop)
+    the framework's cleanup hook would raise ``ValueError: Token was
+    created in a different Context``.
+    """
+    if not isinstance(request_body, dict) or not request_body.get("messages"):
+        raise HTTPException(status_code=400, detail="Request body must include 'messages'.")
+
+    custom_event_queue: "asyncio.Queue[tuple[str, Dict[str, Any]]]" = asyncio.Queue()
+    agent = router_agent.build_agent(custom_event_queue)
+    config = AgentConfig(require_confirmation=False)
+    encoder = EventEncoder()
+
+    async def event_generator():
+        event_count = 0
+        # Internal sentinels for the framework drain queue. A tuple
+        # (kind, payload) protocol lets us tell normal events apart from
+        # the "stream ended" or "stream errored" terminals without
+        # mixing types.
+        framework_queue: "asyncio.Queue[tuple[str, Any]]" = asyncio.Queue()
+        end_sentinel = object()
+
+        async def drain_framework() -> None:
+            """Own the framework iterator from a single task context.
+
+            All ``__anext__`` calls on ``run_agent_stream`` happen inside
+            this coroutine, so ContextVar tokens that the framework sets
+            during one chunk and resets during a later chunk stay inside
+            the same Task context.
+            """
+            try:
+                async for event in run_agent_stream(request_body, agent, config):
+                    await framework_queue.put(("event", event))
+            except Exception as exc:  # noqa: BLE001 - forwarded to caller
+                await framework_queue.put(("error", exc))
+            finally:
+                await framework_queue.put(("end", end_sentinel))
+
+        fw_drain_task = asyncio.create_task(drain_framework())
+        fw_get: Optional[asyncio.Task] = asyncio.create_task(framework_queue.get())
+        q_get: Optional[asyncio.Task] = asyncio.create_task(custom_event_queue.get())
+
+        try:
+            while True:
+                done, _pending = await asyncio.wait(
+                    {fw_get, q_get},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                # Queue items take precedence so router-emitted CUSTOM
+                # events land ahead of any framework event that completed
+                # in the same tick.
+                if q_get in done:
+                    kind, payload = q_get.result()
+                    yield encoder.encode(_make_custom_event(kind, payload))
+                    q_get = asyncio.create_task(custom_event_queue.get())
+
+                if fw_get in done:
+                    kind, payload = fw_get.result()
+                    if kind == "end":
+                        # Framework done — drain any remaining queued
+                        # CUSTOM payloads and stop. Cancel the pending
+                        # queue waiter first so it doesn't leak.
+                        if q_get is not None and not q_get.done():
+                            q_get.cancel()
+                            try:
+                                await q_get
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                            q_get = None
+                        while not custom_event_queue.empty():
+                            try:
+                                ck, cp = custom_event_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
+                            yield encoder.encode(_make_custom_event(ck, cp))
+                        break
+                    if kind == "error":
+                        if q_get is not None and not q_get.done():
+                            q_get.cancel()
+                            try:
+                                await q_get
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                            q_get = None
+                        # Preserve upstream stack trace.
+                        raise payload
+                    # kind == "event"
+                    event_count += 1
+                    try:
+                        yield encoder.encode(payload)
+                    except Exception as encode_error:  # noqa: BLE001
+                        logger.exception("Failed to encode AG-UI event")
+                        try:
+                            yield encoder.encode(RunErrorEvent(
+                                message="Internal error while streaming events.",
+                                code=type(encode_error).__name__,
+                            ))
+                        except Exception:
+                            pass
+                        return
+                    fw_get = asyncio.create_task(framework_queue.get())
+            logger.info(f"[/api/chat/stream] streamed {event_count} events")
+        except Exception as stream_err:  # noqa: BLE001
+            logger.exception("[/api/chat/stream] streaming failed")
+            try:
+                yield encoder.encode(RunErrorEvent(
+                    message=f"Streaming error: {type(stream_err).__name__}: {stream_err}",
+                    code="StreamError",
+                ))
+            except Exception:
+                pass
+        finally:
+            # Belt-and-braces task cleanup so a client disconnect never
+            # leaks the queue-waiter, framework-queue-waiter, or the
+            # framework drain task.
+            for t in (fw_get, q_get):
+                if t is not None and not t.done():
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
+            if not fw_drain_task.done():
+                fw_drain_task.cancel()
+            try:
+                await fw_drain_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @app.get("/api/powerbi/config")
 async def get_powerbi_config(visual_id: Optional[str] = None):
@@ -197,6 +508,7 @@ async def get_powerbi_config(visual_id: Optional[str] = None):
             embedUrl=embed_url,
             accessToken=powerbi_token_info["embedToken"],
             embedType=embed_type,
+            tokenType=powerbi_token_info.get("tokenType", "Embed"),
             visualId=visual_id,
             reportId=powerbi_token_info.get("reportId"),
             workspaceId=powerbi_token_info.get("workspaceId")
@@ -226,7 +538,7 @@ async def refresh_powerbi_token():
     Refresh the Power BI embed token
     """
     try:
-        await generate_powerbi_token()
+        await initialize_pbi_token()
         if powerbi_token_info.get("embedToken"):
             return {
                 "success": True,
